@@ -12,6 +12,7 @@ local MAX_ATTEMPTS = 3
 local DEFAULTS = {
   enabled = true, frame = 1, output = "self", groupMax = 5, alsoSelf = false,
   timeline = true, showHeals = true, rows = 16, logLimit = 16, autoOpen = true, textSize = 10,
+  summary = true, summaryGroup = false, summaryWindow = true,
 }
 
 local isSecret = issecretvalue or function() return false end
@@ -541,7 +542,7 @@ local function section(parent, text, y) makeLabel(parent, "|cff888888" .. text .
 
 local function buildWindow()
   win = CreateFrame("Frame", "DiedToSettings", UIParent, "BackdropTemplate")
-  win:SetSize(320, 604); win:SetPoint("CENTER"); styleBox(win)
+  win:SetSize(320, 724); win:SetPoint("CENTER"); styleBox(win)
   tinsert(UISpecialFrames, "DiedToSettings")
   makeLabel(win, PAL.accent .. "DiedTo|r  |cff888888settings|r", 15, 14, -12)
   local close = CreateFrame("Button", nil, win, "UIPanelCloseButton"); close:SetPoint("TOPRIGHT", 2, 2)
@@ -566,6 +567,11 @@ local function buildWindow()
   add(makeStepper(win, "Max group deaths per pull", 14, y, 1, 40, 1, function() return DiedToDB.groupMax end, function(v) DiedToDB.groupMax = v end))
   makeLabel(win, "|cff888888Group gets the two summary lines, not the timeline.|r", 10, 14, y - 24)
 
+  y = y - 44; section(win, "END OF FIGHT", y)
+  add(makeCheck(win, "Summary in chat: one line per death, probable cause", 12, y - 14, function() return DiedToDB.summary end, function(v) DiedToDB.summary = v end))
+  add(makeCheck(win, "Send that summary to the group too", 12, y - 38, function() return DiedToDB.summaryGroup end, function(v) DiedToDB.summaryGroup = v end))
+  add(makeCheck(win, "Open the window on its fight tab", 12, y - 62, function() return DiedToDB.summaryWindow end, function(v) DiedToDB.summaryWindow = v end))
+  y = y - 70
   y = y - 50; section(win, "LOCAL DETAIL", y)
   add(makeCheck(win, "Hit-by-hit timeline under each death", 12, y - 14, function() return DiedToDB.timeline end, function(v) DiedToDB.timeline = v end))
   add(makeCheck(win, "Include heals and cooldowns in timeline", 12, y - 38, function() return DiedToDB.showHeals end, function(v) DiedToDB.showHeals = v end))
@@ -621,13 +627,67 @@ for _, e in ipairs({ "PLAYER_LOGIN", "PLAYER_REGEN_ENABLED", "PLAYER_REGEN_DISAB
                      "ENCOUNTER_END", "CHALLENGE_MODE_START", "CHALLENGE_MODE_COMPLETED" }) do
   frame:RegisterEvent(e)
 end
-frame:SetScript("OnEvent", function(_, event)
+-- end-of-fight summary: one line per death with the probable cause
+local summaryTries = 0
+local function fightSummary()
+  local f = ns.fight
+  if not f or not f.ended or f.summarised then return end
+  local idx = ns.fightDeaths and ns.fightDeaths() or {}
+  if #idx == 0 then f.summarised = true; return end
+  local lines, hidden = {}, 0
+  for _, i in ipairs(idx) do
+    local entry = ns.deathList[i]
+    local d, info = ns.getDeath(entry)
+    local cause, kind
+    if d and ns.causeOf then cause, kind = ns.causeOf(d, info) end
+    if not cause then hidden = hidden + 1; cause = "cause still hidden" end
+    local when = d and clock(d.when)
+    local who = d and colorName(d.name, d.class) or "?"
+    local cc = (kind == "avoid" or kind == "oneshot") and "|cffff5050" or kind == "kick" and "|cff5c9bff" or "|cffffffff"
+    lines[#lines + 1] = (when and ("|cff888888" .. when .. "|r ") or "") .. who .. " |cff888888—|r " .. cc .. cause .. "|r"
+  end
+  summaryTries = summaryTries + 1
+  if hidden > 0 and summaryTries < 6 then C_Timer.After(2, fightSummary); return end
+  f.summarised = true
+  local head = string.format("%s %s %s · %d %s", f.name or "Fight", f.success and "|cff60ff80killed|r" or "|cffff5050wipe|r",
+    f.length and string.format("at %d:%02d", math.floor(f.length / 60), math.floor(f.length % 60)) or "", #idx, #idx == 1 and "death" or "deaths")
+  if DiedToDB.summary then
+    say(head)
+    for _, l in ipairs(lines) do say(INDENT .. l, true) end
+  end
+  if DiedToDB.summaryGroup then
+    local channel = groupChannel()
+    if channel then
+      queue[#queue + 1] = { text = "DiedTo: " .. plain(head), channel = channel }
+      for _, l in ipairs(lines) do queue[#queue + 1] = { text = "  " .. plain(l), channel = channel } end
+      flush()
+    end
+  end
+  if DiedToDB.summaryWindow and ns.showFight then ns.showFight() end
+end
+ns.fightSummary = fightSummary
+
+frame:SetScript("OnEvent", function(_, event, ...)
   if event == "PLAYER_LOGIN" then
     DiedToDB = DiedToDB or {}
     for k, v in pairs(DEFAULTS) do if DiedToDB[k] == nil then DiedToDB[k] = v end end
     registerOptions()
     C_Timer.After(2, function() applyLogLimit() end)
-  elseif event == "ENCOUNTER_START" or event == "CHALLENGE_MODE_START" then
+  elseif event == "ENCOUNTER_START" then
+    sentThisPull = 0
+    local _, name = ...
+    ns.fight = { start = GetTime(), name = name, ended = false }
+    summaryTries = 0
+  elseif event == "ENCOUNTER_END" then
+    local f = ns.fight
+    if f then
+      local _, _, _, _, success = ...
+      f.ended, f.endedAt, f.success = true, GetTime(), (success == 1 or success == true)
+      f.length = f.endedAt - f.start
+    end
+    C_Timer.After(1.5, function() scan(); flush() end)
+    C_Timer.After(3, fightSummary)
+  elseif event == "CHALLENGE_MODE_START" then
     sentThisPull = 0
   elseif event == "PLAYER_REGEN_DISABLED" then
     if not (IsEncounterInProgress and IsEncounterInProgress()) then sentThisPull = 0 end
@@ -648,8 +708,14 @@ SlashCmdList.DIEDTO = function(msg)
   elseif msg == "me" or msg == "party" or msg == "group" then
     DiedToDB.output = (msg == "me") and "self" or msg; say("output: " .. DiedToDB.output)
   elseif msg == "test" then runTest(false); if ns.addTestDeath then ns.addTestDeath() end
+  elseif msg == "test fight" then
+    ns.fight = { start = GetTime() - 95, name = "Test boss", ended = false }
+    for i = 1, 3 do if ns.addTestDeath then ns.addTestDeath() end end
+    ns.fight.ended, ns.fight.endedAt, ns.fight.success, ns.fight.length = true, GetTime(), false, 95
+    summaryTries = 0; fightSummary()
   elseif msg == "test group" then runTest(true)
   elseif msg == "last" then scan(false, true)
+  elseif msg == "fight" then if ns.fight then ns.fight.summarised = false; summaryTries = 0; fightSummary() else say("no boss fight yet this session") end
   elseif msg == "dump" then say("use /diedto probe")
   elseif msg == "probe" then
     local function st(v) if v == nil then return "nil" end; return isSecret(v) and "SECRET" or ("ok:" .. tostring(v):sub(1, 24)) end
@@ -704,7 +770,7 @@ SlashCmdList.DIEDTO = function(msg)
     if n and _G["ChatFrame" .. n] then DiedToDB.frame = n; say("local output now in chat frame " .. n)
     else say("usage: /diedto frame <n> (1 = General)") end
   else
-    say("/diedto — death window | config — settings | on|off | me|party|group | test | test group | frame <n> | last | dump | source")
+    say("/diedto — death window | config — settings | on|off | me|party|group | test | test group | test fight | fight (reprint summary) | frame <n> | last | dump | source")
   end
 end
 

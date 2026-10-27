@@ -257,6 +257,74 @@ local function analyse(death)
   return info
 end
 
+-- Probable cause of death, one short phrase. Readable values only (nil while hidden).
+--   one-shot / avoidable hit / burst from several abilities / ticked down by one ability /
+--   low health for a while then finished / plain killing blow with its share of the damage
+local function causeOf(d, info)
+  if not d or not info or info.hidden then return nil end
+  local dmg, kb = info.dmg or {}, info.kb
+  if #dmg == 0 or not kb then return "no damage logged", "none" end
+  local kbName = spellNameOf(kb)
+  local avoid = info.avoid or {}
+  -- max health estimate from hits whose before/after health ratio is known
+  local maxHP, prevHP = nil, nil
+  local ests = {}
+  for _, e in ipairs(d.events) do
+    if e.kind == "dmg" and type(e.hp) == "number" then
+      if prevHP and prevHP > e.hp + 0.03 and type(e.amount) == "number" then ests[#ests + 1] = e.amount / (prevHP - e.hp) end
+      prevHP = e.hp
+    elseif e.kind == "heal" and type(e.hp) == "number" then prevHP = e.hp end
+  end
+  if #ests > 0 then table.sort(ests); maxHP = ests[math.ceil(#ests / 2)] end
+  local kbFrac = maxHP and (kb.amount or 0) / maxHP or nil
+  -- burst: damage in the 2 s up to the killing blow
+  local burst, burstBy, t0 = 0, {}, kb.time
+  if t0 then
+    for _, e in ipairs(dmg) do
+      if e.time and e.time >= t0 - 2 and e.time <= t0 then
+        burst = burst + (e.amount or 0)
+        local k = e.id or e.label or "?"
+        burstBy[k] = (burstBy[k] or 0) + (e.amount or 0)
+      end
+    end
+  end
+  local burstFrac = maxHP and burst / maxHP or nil
+  local nBurst = 0; for _ in pairs(burstBy) do nBurst = nBurst + 1 end
+  -- low health: how long were they under 35% before the end
+  local lowSince
+  for _, e in ipairs(d.events) do
+    if type(e.hp) == "number" and e.time then
+      if e.hp < 0.35 then lowSince = lowSince or e.time else lowSince = nil end
+    end
+  end
+  local lowFor = (lowSince and t0) and (t0 - lowSince) or 0
+  local top = info.order and info.order[1] and info.by[info.order[1]]
+  local topShare = (top and info.total and info.total > 0) and top.amount / info.total or 0
+  local pct = (info.total and info.total > 0) and math.floor((kb.amount or 0) / info.total * 100 + 0.5) or 0
+
+  if avoid[kb.id] then
+    if kbFrac and kbFrac >= 0.9 then return "one-shot by " .. kbName .. " (avoidable)", "avoid" end
+    return "stood in " .. kbName .. " (avoidable)", "avoid"
+  end
+  if kbFrac and kbFrac >= 0.9 then return "one-shot by " .. kbName, "oneshot" end
+  if ns.isKickable and ns.isKickable(kb.id) then return "hit by " .. kbName .. " (interruptible)", "kick" end
+  if top and avoid[top.e.id] and top.n >= 2 and topShare >= 0.5 then return "stood in " .. spellNameOf(top.e) .. " (" .. top.n .. " ticks, avoidable)", "avoid" end
+  if burstFrac and burstFrac >= 0.7 and nBurst >= 2 then
+    local ks = {}
+    for k, v in pairs(burstBy) do ks[#ks + 1] = { k = k, v = v } end
+    table.sort(ks, function(a, b) return a.v > b.v end)
+    local a, b = info.by[ks[1].k], info.by[ks[2].k]
+    return "burst: " .. spellNameOf(a and a.e or kb) .. " + " .. spellNameOf(b and b.e or kb) .. " in 2s", "burst"
+  end
+  if top and top.n >= 3 and topShare >= 0.6 and top.e.id ~= kb.id then
+    return "ticked down by " .. spellNameOf(top.e) .. " (" .. top.n .. " hits), finished by " .. kbName, "dot"
+  end
+  if top and top.n >= 3 and topShare >= 0.6 then return "ticked down by " .. kbName .. " (" .. top.n .. " hits)", "dot" end
+  if lowFor >= 3 then return string.format("low health for %ds, finished by %s", math.floor(lowFor + 0.5), kbName), "low" end
+  return "killed by " .. kbName .. " (" .. pct .. "% of damage taken)", "kb"
+end
+ns.causeOf = causeOf
+
 -- Once a death's values are readable they don't change, so analyse once and keep it.
 local function get(entry)
   if entry.cache then return entry.cache.d, entry.cache.info end
@@ -384,6 +452,7 @@ local function makeDetailRow(i)
   end)
   r:SetScript("OnLeave", function(self) self.hover:SetAlpha(0); GameTooltip:Hide() end)
   r:SetScript("OnMouseUp", function(self)
+    if self.deathIndex then selected = self.deathIndex; follow = (selected == #deaths); mode = "time"; rowOffset = 0; refresh(); return end
     if IsAltKeyDown() and self.e and type(safe(self.e.id)) == "number" and not isMelee(self.e.id) then ns.showURL(self.e.id) end
   end)
   detailRows[i] = r
@@ -432,8 +501,10 @@ local function build()
   nxt:SetPoint("LEFT", win.count, "RIGHT", 2, 0)
   win.modeTime = textButton(bar, "time", function() mode = "time"; rowOffset = 0; refresh() end)
   win.modeHits = textButton(bar, "hits", function() mode = "hits"; rowOffset = 0; refresh() end)
+  win.modeFight = textButton(bar, "fight", function() mode = "fight"; rowOffset = 0; refresh() end)
   win.modeTime:SetPoint("LEFT", nxt, "RIGHT", 8, 0)
   win.modeHits:SetPoint("LEFT", win.modeTime, "RIGHT", 4, 0)
+  win.modeFight:SetPoint("LEFT", win.modeHits, "RIGHT", 4, 0)
   local close = textButton(bar, "x", function() win:Hide() end); close:SetPoint("RIGHT", -2, 0)
   local settings = textButton(bar, "opts", function() ns.openSettings() end); settings:SetPoint("RIGHT", close, "LEFT", -2, 0)
   local clear = textButton(bar, "clear", function() wipe(deaths); selected = nil; rowOffset = 0; refresh() end)
@@ -539,6 +610,7 @@ refresh = function()
   local onC, offC = T.diamond, T.muted
   win.modeTime.fs:SetTextColor(unpack(mode == "time" and onC or offC))
   win.modeHits.fs:SetTextColor(unpack(mode == "hits" and onC or offC))
+  win.modeFight.fs:SetTextColor(unpack(mode == "fight" and onC or offC))
   if selected and selected > #deaths then selected = #deaths end
   if not selected and #deaths > 0 then selected = #deaths end
   if follow then listOffset = math.max(0, #deaths - win.nList) end
@@ -562,8 +634,44 @@ refresh = function()
     end
   end
 
-  for i = 1, #detailRows do detailRows[i]:Hide(); detailRows[i].e = nil; detailRows[i].flag:Hide() end
+  for i = 1, #detailRows do detailRows[i]:Hide(); detailRows[i].e = nil; detailRows[i].deathIndex = nil; detailRows[i].flag:Hide() end
   win.more:SetText("")
+  if mode == "fight" then
+    local list = ns.fightDeaths and ns.fightDeaths() or {}
+    local fight = ns.fight
+    if fight and fight.name then
+      setText(win.h1, cat(C.diamond, fight.name, "|r", C.muted, fight.ended and (fight.success and "  ·  kill" or "  ·  wipe") or "  ·  in progress", "|r",
+        fight.length and string.format("  ·  %d:%02d", math.floor(fight.length / 60), math.floor(fight.length % 60)) or ""))
+    else
+      win.h1:SetText(C.muted .. "No boss fight yet|r")
+    end
+    win.h2:SetText(#list == 0 and (C.muted .. "No deaths in the last fight.|r") or (C.muted .. #list .. (#list == 1 and " death" or " deaths") .. "  ·  click a row for the hit-by-hit|r"))
+    win.h3:SetText("")
+    local n = win.nRows
+    rowOffset = math.min(rowOffset, math.max(0, #list - n))
+    for i = 1, n do
+      local idx, r = list[rowOffset + i], detailRows[i]
+      if idx then
+        local entry = deaths[idx]
+        local d, info = get(entry)
+        r.deathIndex = idx
+        r.e = info and info.kb or nil
+        r.mark:SetShown(idx == selected)
+        r.hp:Hide(); r.pct:SetText("")
+        r.time:SetText(d and (ns.clock(d.when) or "") or "")
+        if info and info.kb then pcall(r.icon.SetTexture, r.icon, iconOf(info.kb)) else r.icon:SetTexture(134400) end
+        local who = cat("|c", classColor(d and d.class), shortName(d and d.name) or "?", "|r")
+        local causeTxt, kind = causeOf(d, info)
+        if not causeTxt then causeTxt = (info and info.hidden) and "values hidden until the pull ends" or "?" end
+        local cc = (kind == "avoid" or kind == "oneshot") and C.ruby or kind == "kick" and C.sapphire or C.fg
+        setText(r.spell, cat(who, C.muted, "  —  |r", cc, causeTxt, "|r"))
+        r.amount:SetText(""); r.src:SetText("")
+        r:Show()
+      end
+    end
+    if #list > n then win.more:SetText(string.format("%d–%d of %d  ·  scroll", rowOffset + 1, math.min(#list, rowOffset + n), #list)) end
+    return
+  end
   local entry = selected and deaths[selected]
   local d, info
   if entry then d, info = get(entry) end
@@ -724,6 +832,22 @@ function ns.tick()
   if ns.reportNew then ns.reportNew() end
 end
 ns.deathList, ns.getDeath = deaths, get
+
+-- indexes of the deaths that belong to the current / last boss fight
+function ns.fightDeaths()
+  local f, out = ns.fight, {}
+  if not f then return out end
+  for i, entry in ipairs(deaths) do
+    if entry.addedAt and entry.addedAt >= f.start - 2 and (not f.endedAt or entry.addedAt <= f.endedAt + 8) then out[#out + 1] = i end
+  end
+  return out
+end
+
+function ns.showFight()
+  if not win then build() end
+  mode = "fight"; rowOffset = 0
+  win:Show(); refresh()
+end
 
 local watcher = CreateFrame("Frame")
 local acc, ready = 0, false

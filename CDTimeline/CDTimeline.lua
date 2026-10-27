@@ -47,6 +47,8 @@ local DEFAULTS = {
     groupGap   = 14,     -- gap between the Major and Other groups
     stackAll   = false,  -- stack: also show other players' planned casts in the column (/tl all)
     trackOther = {},     -- [specID] = { spellID, ... } : the "Other" group, overrides OTHER_DEFAULTS
+    trinkets   = true,   -- track equipped on-use trinkets as their own group (/tl trinkets)
+    trinketSeen = {},    -- [itemID] = true : on-use trinkets you have had equipped (offered in the planner's + menu)
     graphOn    = true,   -- the fight graph window (/tl graph)
     graphWidth = 440,
     graphHeight = 190,
@@ -54,7 +56,12 @@ local DEFAULTS = {
     graphAll   = false,  -- graph: rows for every healer, not just me (/tl graph all)
     phaseLearned = {},   -- [encounterID] = { [difficultyID] = { [stage] = seconds since pull } } from the last pull's stage changes
     mineOn     = true,   -- the own-cooldowns column (/tl mine)
-    mineCDM    = false,  -- draw the plan's countdowns on Blizzard's Cooldown Manager icons instead of the column (/tl cdm)
+    mineCDM    = false,  -- the compact row instead of the cooldown column (/tl cdm)
+    cdmIcon    = 30,     -- its icon size
+    cdmGap     = 6,      -- gap between its icons
+    cdmAll     = false,  -- show every tracked cooldown, not just the ones the plan wants again
+    cdmLocked  = true,   -- drag it with /tl cdmlock
+    cdmPoint   = nil,
     minePoint  = nil,    -- nil = attached to the right of the plan bar, landing lines aligned; set when you drag it
     mineOffset = 10,     -- gap between the plan bar and the attached column
     mineSched  = true,   -- show the plan's scheduled casts of each tracked spell (/tl sched)
@@ -147,6 +154,9 @@ end
 -- Spell helpers (11.0+ C_Spell API with fallbacks)
 ------------------------------------------------------------------------
 local function SpellTexture(id)
+    if ns.ITEM_OF and ns.ITEM_OF[id] and C_Item and C_Item.GetItemIconByID then
+        local ok, t = pcall(C_Item.GetItemIconByID, ns.ITEM_OF[id]); if ok and t then return t end
+    end
     if C_Spell and C_Spell.GetSpellTexture then
         return C_Spell.GetSpellTexture(id)
     elseif GetSpellTexture then
@@ -155,12 +165,75 @@ local function SpellTexture(id)
 end
 
 local function SpellName(id)
+    if ns.ITEM_OF and ns.ITEM_OF[id] and ns.ItemName then local n = ns.ItemName(ns.ITEM_OF[id]); if n then return n end end
     if C_Spell and C_Spell.GetSpellName then
         return C_Spell.GetSpellName(id)
     elseif GetSpellInfo then
         return (GetSpellInfo(id))
     end
 end
+
+------------------------------------------------------------------------
+-- On-use trinkets. A trinket is tracked / planned through its on-use spell ID (that is what
+-- UNIT_SPELLCAST_SUCCEEDED and plan rows carry); ITEM_OF maps that spell back to the item so the
+-- cooldown, icon and name come from the item APIs.
+------------------------------------------------------------------------
+local TR = {}
+TR.ITEM_OF = {}        -- [spellID] = itemID
+TR.DATA = {    -- known cooldown / effect lengths (used until a real cooldown has been observed)
+    [270162] = { cd = 120, dur = 20, short = "Vessel" },   -- Soulcoiler Ritual Vessel (Nek'zali): 5 barriers, 50% damage reduction for 20 s
+}
+function TR.ItemSpell(itemID)
+    if C_Item and C_Item.GetItemSpell then
+        local ok, name, id = pcall(C_Item.GetItemSpell, itemID)
+        if ok and id then return id, name end
+    elseif GetItemSpell then
+        local ok, name, id = pcall(GetItemSpell, itemID)
+        if ok and id then return id, name end
+    end
+    if C_Item and C_Item.RequestLoadItemDataByID then pcall(C_Item.RequestLoadItemDataByID, itemID) end
+end
+function TR.ItemName(itemID)
+    if C_Item and C_Item.GetItemNameByID then local ok, n = pcall(C_Item.GetItemNameByID, itemID); if ok and n then return n end end
+    if GetItemInfo then local ok, n = pcall(GetItemInfo, itemID); if ok and n then return n end end
+end
+function TR.ItemIcon(itemID)
+    if C_Item and C_Item.GetItemIconByID then local ok, t = pcall(C_Item.GetItemIconByID, itemID); if ok and t then return t end end
+    if GetItemIcon then local ok, t = pcall(GetItemIcon, itemID); if ok and t then return t end end
+end
+-- register an item's on-use spell; returns the spellID (nil until the item data is cached)
+function TR.TrinketSpell(itemID)
+    local id = TR.ItemSpell(itemID)
+    if not id then return end
+    TR.ITEM_OF[id] = itemID
+    return id
+end
+-- the on-use trinkets in slots 13 / 14 right now, as { spellID, ... }
+function TR.EquippedTrinketSpells()
+    local out = {}
+    if not GetInventoryItemID then return out end
+    for _, slot in ipairs({ 13, 14 }) do
+        local ok, itemID = pcall(GetInventoryItemID, "player", slot)
+        if ok and itemID and not (issecretvalue and issecretvalue(itemID)) then
+            local id = TR.TrinketSpell(itemID)
+            if id then out[#out + 1] = id; if DB.trinketSeen then DB.trinketSeen[itemID] = true end end
+        end
+    end
+    return out
+end
+function TR.ItemCooldown(itemID)
+    if C_Item and C_Item.GetItemCooldown then
+        local ok, st, d, en = pcall(C_Item.GetItemCooldown, itemID)
+        if ok then return st, d, en end
+    elseif C_Container and C_Container.GetItemCooldown then
+        local ok, st, d, en = pcall(C_Container.GetItemCooldown, itemID)
+        if ok then return st, d, en end
+    elseif GetItemCooldown then
+        local ok, st, d, en = pcall(GetItemCooldown, itemID)
+        if ok then return st, d, en end
+    end
+end
+ns.ITEM_OF, ns.TRINKET_DATA, ns.TrinketSpell, ns.ItemName = TR.ITEM_OF, TR.DATA, TR.TrinketSpell, TR.ItemName
 
 ------------------------------------------------------------------------
 -- Parser
@@ -523,6 +596,12 @@ local function CurrentSpecID()
 end
 
 local function SpellKnown(id)
+    local itemID = TR.ITEM_OF[id]
+    if itemID then
+        if C_Item and C_Item.IsEquippedItem then local ok, r = pcall(C_Item.IsEquippedItem, itemID); if ok then return r and true or false end end
+        if IsEquippedItem then local ok, r = pcall(IsEquippedItem, itemID); if ok then return r and true or false end end
+        return true
+    end
     if IsPlayerSpell then local ok, r = pcall(IsPlayerSpell, id); if ok and r then return true end end
     if IsSpellKnownOrOverridesKnown then local ok, r = pcall(IsSpellKnownOrOverridesKnown, id); if ok and r then return true end end
     if C_SpellBook and C_SpellBook.IsSpellInSpellBook then local ok, r = pcall(C_SpellBook.IsSpellInSpellBook, id); if ok and r then return true end end
@@ -560,11 +639,19 @@ local function ModelDuration(id)
         local ok, ms = pcall(GetSpellBaseCooldown, id)
         if ok and ms and not IsSecret(ms) and ms > 1600 then return ms / 1000 end
     end
+    local itemID = TR.ITEM_OF[id]
+    if itemID and TR.DATA[itemID] then return TR.DATA[itemID].cd end
     return BASE_CD[id] or 120
 end
 
 -- info table from the 11.0+ API (fields may be secret), or an old-style tuple
 local function CooldownInfo(id)
+    local itemID = TR.ITEM_OF[id]
+    if itemID then
+        local st, d, en = TR.ItemCooldown(itemID)
+        if st == nil then return end
+        return st, d, nil, nil, en
+    end
     if C_Spell and C_Spell.GetSpellCooldown then
         local ok, t = pcall(C_Spell.GetSpellCooldown, id)
         if ok and t then return t.startTime, t.duration, t.isActive, t.isOnGCD, t.isEnabled end
@@ -1749,6 +1836,16 @@ end
 local function FeedWidget(f, id, st, d)
     local cool = f.cool
     if not cool then return end
+    local itemID = TR.ITEM_OF[id]
+    if itemID then
+        if C_Item and C_Item.GetItemCooldownDuration and cool.SetCooldownFromDurationObject then
+            local ok, obj = pcall(C_Item.GetItemCooldownDuration, itemID)
+            if ok and obj then pcall(cool.SetCooldownFromDurationObject, cool, obj); return end
+        end
+        local s2, d2 = TR.ItemCooldown(itemID)
+        if s2 and d2 and not IsSecret(s2) and not IsSecret(d2) and d2 > 0 then pcall(cool.SetCooldown, cool, s2, d2) elseif cool.Clear then pcall(cool.Clear, cool) end
+        return
+    end
     if C_Spell and C_Spell.GetSpellCooldownDuration and cool.SetCooldownFromDurationObject then
         local ok, obj = pcall(C_Spell.GetSpellCooldownDuration, id)
         if ok and obj then pcall(cool.SetCooldownFromDurationObject, cool, obj); return end
@@ -1901,6 +1998,7 @@ local function RebuildTracked()
     end
     addGroup((spec and DB.track[spec]) or (spec and TRACK_DEFAULTS[spec]) or {}, "major")
     addGroup((spec and DB.trackOther[spec]) or (spec and OTHER_DEFAULTS[spec]) or {}, "other")
+    if DB.trinkets then addGroup(TR.EquippedTrinketSpells(), "trinket") end
     wipe(mine.tracked)
     for _, e in ipairs(mine.list) do mine.tracked[e.spellID] = e end
     ns.mineCount = #mine.list
@@ -2112,140 +2210,130 @@ local function MineUpdate()
     end
 end
 
--- Cooldown Manager mode (/tl cdm): the plan's countdown sits just above the spell's icon on Blizzard's
--- Essential / Utility cooldown viewers - red while you should hold it (plus a red cross on the icon), "GO" at 0.
-local cdm = { frame = CreateFrame("Frame", "CDTimelineCDM", UIParent), map = {}, over = {}, lastScan = 0, warned = false }
+-- Compact row (/tl cdm): our own small draggable row holding only what you need to read mid-pull -
+-- each cooldown's icon with the countdown to its planned cast above it, red while you should hold it
+-- (plus a red cross on the icon), "GO" at the planned moment. It is our frame, so it sits happily over
+-- any Cooldown Manager skin: unlock it once (/tl cdmlock), drag it over your icons, lock it again.
+local cdm = { frame = CreateFrame("Frame", "CDTimelineCDM", UIParent, "BackdropTemplate"), icons = {} }
+cdm.frame:SetSize(120, 60)
+cdm.frame:SetClampedToScreen(true)
+cdm.frame:SetMovable(true)
+cdm.frame:RegisterForDrag("LeftButton")
+cdm.frame:SetScript("OnDragStart", function(f) if f:IsMovable() then f:StartMoving() end end)
+cdm.frame:SetScript("OnDragStop", function(f)
+    f:StopMovingOrSizing()
+    local pt = ns.SavePoint(f); if pt then DB.cdmPoint = pt end
+end)
+cdm.frame.title = cdm.frame:CreateFontString(nil, "OVERLAY")
+cdm.frame.title:SetPoint("BOTTOM", cdm.frame, "TOP", 0, 2)
 cdm.frame:Hide()
 
-local function CDMViewers()
-    local v = {}
-    for _, name in ipairs({ "EssentialCooldownViewer", "UtilityCooldownViewer", "BuffIconCooldownViewer" }) do
-        local f = _G[name]
-        if f then v[#v + 1] = f end
+local function CDMIcon(e, size)
+    local f = cdm.icons[e.spellID]
+    if not f then
+        f = CreateFrame("Frame", nil, cdm.frame)
+        f.tex = f:CreateTexture(nil, "ARTWORK")
+        f.tex:SetAllPoints(); f.tex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        f.num = f:CreateFontString(nil, "OVERLAY")
+        f.num:SetPoint("BOTTOM", f, "TOP", 0, 1); f.num:SetJustifyH("CENTER"); f.num:SetWordWrap(false)
+        f.cross = f:CreateTexture(nil, "OVERLAY")
+        f.cross:SetTexture("Interface\\RaidFrame\\ReadyCheck-NotReady")
+        f.cross:SetPoint("CENTER"); f.cross:SetAlpha(0.95); f.cross:Hide()
+        cdm.icons[e.spellID] = f
     end
-    return v
+    local tex = SpellTexture(e.spellID)
+    if tex then f.tex:SetTexture(tex) end
+    f:SetSize(size, size)
+    f.cross:SetSize(math.floor(size * 0.7), math.floor(size * 0.7))
+    return f
 end
 
--- spellID of a viewer item frame (Blizzard caches cooldownInfo on the item; fall back to the C_CooldownViewer lookup)
-local function CDMItemSpell(item)
-    local info = item.cooldownInfo
-    if not info and item.GetCooldownID and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo then
-        local ok, id = pcall(item.GetCooldownID, item)
-        if ok and id and not IsSecret(id) then
-            local ok2, i2 = pcall(C_CooldownViewer.GetCooldownViewerCooldownInfo, id)
-            if ok2 then info = i2 end
-        end
+-- which cooldowns the row shows: those the plan wants again (or everything tracked, /tl cdmall)
+local function CDMShown()
+    local out = {}
+    for _, e in ipairs(mine.list) do
+        if DB.cdmAll or e.sched then out[#out + 1] = e end
     end
-    if type(info) ~= "table" then return end
-    local ids = {}
-    for _, k in ipairs({ "overrideSpellID", "spellID" }) do
-        local id = info[k]
-        if id and not IsSecret(id) and id ~= 0 then ids[#ids + 1] = id end
-    end
-    if type(info.linkedSpellIDs) == "table" then
-        for _, id in ipairs(info.linkedSpellIDs) do if id and not IsSecret(id) then ids[#ids + 1] = id end end
-    end
-    return ids
-end
-
--- spellID -> the viewer item frame showing it; rescanned every second (the viewers re-lay out on spec / talent changes)
-local function CDMScan(now)
-    if now - cdm.lastScan < 1 then return end
-    cdm.lastScan = now
-    wipe(cdm.map)
-    local any = false
-    for _, viewer in ipairs(CDMViewers()) do
-        any = true
-        local items
-        if viewer.itemFramePool and viewer.itemFramePool.EnumerateActive then
-            items = {}
-            for item in viewer.itemFramePool:EnumerateActive() do items[#items + 1] = item end
-        elseif viewer.GetItemFrames then
-            local ok, r = pcall(viewer.GetItemFrames, viewer); items = ok and r or nil
-        end
-        if not items then items = { viewer:GetChildren() } end
-        for _, item in ipairs(items) do
-            if type(item) == "table" and item.IsShown then
-                local ids = CDMItemSpell(item)
-                if ids then for _, id in ipairs(ids) do if not cdm.map[id] then cdm.map[id] = item end end end
-            end
-        end
-    end
-    if not any and not cdm.warned then
-        cdm.warned = true
-        Print("Cooldown Manager frames not found - turn it on in Options > Gameplay > Cooldown Manager (or /tl cdm to go back to the column).")
-    end
-end
-
-local function CDMOverlay(item)
-    local o = cdm.over[item]
-    if o then return o end
-    o = CreateFrame("Frame", nil, item)
-    o:SetAllPoints(item)
-    o:SetFrameLevel(item:GetFrameLevel() + 10)
-    o.num = o:CreateFontString(nil, "OVERLAY")
-    o.num:SetPoint("BOTTOM", item, "TOP", 0, 1)
-    o.num:SetJustifyH("CENTER"); o.num:SetWordWrap(false)
-    o.cross = o:CreateTexture(nil, "OVERLAY", nil, 7)
-    o.cross:SetTexture("Interface\\RaidFrame\\ReadyCheck-NotReady")
-    o.cross:SetPoint("CENTER", item, "CENTER", 0, 0)
-    o.cross:SetAlpha(0.9)
-    o.cross:Hide()
-    cdm.over[item] = o
-    return o
+    table.sort(out, function(x, y) return (x.schedRem or math.huge) < (y.schedRem or math.huge) end)
+    return out
 end
 
 local function CDMUpdate()
     local now = GetTime()
     local elapsed = state.active and (now - state.startTime) or nil
-    MineTick(now, elapsed, DB.mineIcon)
-    CDMScan(now)
-    local used = {}
-    local look = DB.lookahead
-    for _, e in ipairs(mine.list) do
-        local item = cdm.map[e.spellID]
-        if item then
-            local o = CDMOverlay(item)
-            used[item] = true
-            local rem, sr = e.rem, e.schedRem
-            if not e.sched then
-                o.num:Hide(); o.cross:Hide()
-            else
-                local w = item:GetWidth() or 36
-                ApplyFont(o.num, math.max(8, DB.fontSize + 1), "OUTLINE")
-                o.num:SetWidth(w + 30)
-                local hold = rem <= 0 and sr > 0 and sr < ModelDuration(e.spellID) - 0.5
-                local num = sr < 60 and tostring(math.ceil(sr)) or string.format("%d:%02d", math.floor(sr / 60), math.floor(sr % 60))
-                local red = false
-                if rem > 0 and rem > sr + 0.5 then o.num:SetText(sr <= 0 and ("late " .. math.ceil(rem)) or ("+" .. math.ceil(rem - sr))); red = true
-                elseif sr <= 0 then o.num:SetText("GO"); Col(o.num, T.fg)
-                elseif hold then o.num:SetText(num); red = true
-                else o.num:SetText(num); if sr <= 5 then Col(o.num, T.fg) elseif sr <= look then Col(o.num, T.fg2) else Col(o.num, T.muted) end end
-                if red then Col(o.num, LK.CB.vermillion) end
-                if sr <= 5 and sr > 0 and not hold then ApplyFont(o.num, DB.fontSize + 4, "OUTLINE") end
-                o.num:Show()
-                if hold then
-                    local cs = math.floor(w * 0.5)
-                    o.cross:SetSize(cs, cs); o.cross:Show()
-                else
-                    o.cross:Hide()
-                end
-            end
-            o:Show()
-        end
+    MineTick(now, elapsed, DB.cdmIcon)
+    local size, gap, look = DB.cdmIcon, DB.cdmGap, DB.lookahead
+    local list = CDMShown()
+    local movable = (not DB.locked) or (DB.cdmLocked == false)
+    local shown = {}
+    local n = #list
+    if n == 0 and not movable then
+        for _, f in pairs(cdm.icons) do f:Hide() end
+        cdm.frame:SetBackdropColor(0, 0, 0, 0); cdm.frame:SetBackdropBorderColor(0, 0, 0, 0)
+        cdm.frame.title:Hide()
+        cdm.frame:SetSize(math.max(60, size), size + DB.fontSize + 8)
+        return
     end
-    for item, o in pairs(cdm.over) do if not used[item] then o.num:Hide(); o.cross:Hide(); o:Hide() end end
+    local w = math.max(size, n * size + math.max(0, n - 1) * gap)
+    cdm.frame:SetSize(w + 8, size + DB.fontSize + 10)
+    for i, e in ipairs(list) do
+        local f = CDMIcon(e, size)
+        shown[e.spellID] = true
+        f:ClearAllPoints()
+        f:SetPoint("LEFT", cdm.frame, "LEFT", 4 + (i - 1) * (size + gap), -2)
+        local rem, sr = e.rem, e.schedRem
+        ApplyFont(f.num, math.max(8, DB.fontSize), "OUTLINE")
+        f.num:SetWidth(size + gap + 16)
+        if not e.sched then
+            -- /tl cdmall: no planned cast, just show whether it is ready
+            f.num:SetText(rem > 0 and (rem >= 60 and string.format("%d:%02d", math.floor(rem / 60), math.floor(rem % 60)) or tostring(math.ceil(rem))) or "")
+            Col(f.num, T.muted); f.cross:Hide()
+            if f.tex.SetDesaturated then f.tex:SetDesaturated(rem > 0) end
+        else
+            local hold = rem <= 0 and sr > 0 and sr < ModelDuration(e.spellID) - 0.5
+            local num = sr < 60 and tostring(math.ceil(sr)) or string.format("%d:%02d", math.floor(sr / 60), math.floor(sr % 60))
+            local red = false
+            if rem > 0 and rem > sr + 0.5 then f.num:SetText(sr <= 0 and ("late " .. math.ceil(rem)) or ("+" .. math.ceil(rem - sr))); red = true
+            elseif sr <= 0 then f.num:SetText("GO"); Col(f.num, T.fg)
+            elseif hold then f.num:SetText(num); red = true
+            else
+                f.num:SetText(num)
+                if sr <= 5 then Col(f.num, T.fg) elseif sr <= look then Col(f.num, T.fg2) else Col(f.num, T.muted) end
+            end
+            if red then Col(f.num, LK.CB.vermillion) end
+            f.cross:SetShown(hold and true or false)
+            if f.tex.SetDesaturated then f.tex:SetDesaturated(rem > 0 and not hold) end
+        end
+        f.num:Show()
+        f:Show()
+    end
+    for id, f in pairs(cdm.icons) do if not shown[id] then f:Hide() end end
+    cdm.frame:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8", edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 })
+    cdm.frame:SetBackdropColor(T.card[1], T.card[2], T.card[3], movable and 0.35 or 0)
+    cdm.frame:SetBackdropBorderColor(T.gold[1], T.gold[2], T.gold[3], movable and 0.6 or 0)
+    cdm.frame:EnableMouse(movable)
+    cdm.frame:SetMovable(movable)
+    if movable then
+        ApplyFont(cdm.frame.title, DB.fontSize)
+        Col(cdm.frame.title, T.gold)
+        cdm.frame.title:SetText("CD Timeline row - drag me over your cooldown icons, then /tl cdmlock")
+        cdm.frame.title:Show()
+    else
+        cdm.frame.title:Hide()
+    end
 end
 
 local function ApplyCDM()
-    local on = DB.mineCDM and not DB.hidden and #mine.list > 0
+    local on = DB.mineCDM and not DB.hidden
+    cdm.frame:ClearAllPoints()
+    local p = DB.cdmPoint
+    if p and ns.ValidPoint(p) then cdm.frame:SetPoint(p[1], UIParent, p[3], p[4], p[5])
+    else cdm.frame:SetPoint("CENTER", UIParent, "CENTER", 0, -120) end
     cdm.frame:SetScript("OnUpdate", on and CDMUpdate or nil)
-    if on then cdm.frame:Show(); cdm.lastScan = 0 else
-        cdm.frame:Hide()
-        for _, o in pairs(cdm.over) do o.num:Hide(); o.cross:Hide(); o:Hide() end
-    end
+    if on then cdm.frame:Show(); CDMUpdate() else cdm.frame:Hide() end
 end
 ns.ApplyCDM = ApplyCDM
+ns._cdm = cdm
 
 -- is this plan entry one of my tracked spells? (then it is drawn in that spell's column, not the crosshair lane)
 local function TrackedEntry(e)
@@ -4183,7 +4271,11 @@ local OPTION_PAGES = {
     { "Column", {
         { t = "text", text = "With the HUD, your cooldowns sit in a row on top of it (icon, the hit it's for, when to press it); the HUD's own icons do the falling. In the single / lanes layouts they keep their own column beside the plan bar." },
         { t = "toggle", label = "Show the column", get = function() return DB.mineOn end, cmd = function() return "mine" end },
-        { t = "toggle", label = "Instead: put the countdowns on Blizzard's Cooldown Manager icons (red while you should hold, with a cross on the icon)", get = function() return DB.mineCDM end, cmd = function() return "cdm" end },
+        { t = "toggle", label = "Track my equipped on-use trinkets too (their own group, plannable like a spell)", get = function() return DB.trinkets end, cmd = function() return "trinkets" end },
+        { t = "toggle", label = "Instead: a compact row (icon + countdown, red while you should hold it) you drag over your cooldown icons", get = function() return DB.mineCDM end, cmd = function() return "cdm" end },
+        { t = "toggle", label = "Unlock that row to move it", get = function() return DB.cdmLocked == false end, cmd = function() return "cdmlock" end },
+        { t = "toggle", label = "Row shows every tracked cooldown, not just the planned ones", get = function() return DB.cdmAll end, cmd = function() return "cdmall" end },
+        { t = "num", label = "Row icon size", get = function() return DB.cdmIcon end, min = 12, max = 64, step = 1, cmd = function(v) return "cdmsize " .. v end },
         { t = "toggle", label = "Unlock the cooldown row (move it on its own; the HUD stays locked)", get = function() return DB.mineLocked == false end, cmd = function() return "minelock" end },
         { t = "button", label = "Put it back in its anchored place", cmd = "minepos reset" },
         { t = "num", label = "Gap to the plan bar", get = function() return DB.mineOffset end, min = 0, max = 100, step = 1, cmd = function(v) return "mineoffset " .. v end },
@@ -4346,7 +4438,7 @@ local function ShowOptionsPage(idx)
             for _, e in ipairs(mine.list) do
                 local yy = row(24)
                 local ic = content:CreateTexture(nil, "ARTWORK"); ic:SetSize(18, 18); ic:SetPoint("TOPLEFT", 4, yy - 2); ic:SetTexture(SpellTexture(e.spellID) or 134400); ic:SetTexCoord(0.08, 0.92, 0.08, 0.92); f.widgets[#f.widgets + 1] = ic
-                label(string.format("%s  |cffb4a0dc%s|r", e.label, e.group == "other" and "Other" or "Major"), yy - 4, 170):SetPoint("TOPLEFT", 28, yy - 4)
+                label(string.format("%s  |cffb4a0dc%s|r", e.label, e.group == "other" and "Other" or e.group == "trinket" and "Trinket" or "Major"), yy - 4, 170):SetPoint("TOPLEFT", 28, yy - 4)
                 local id = e.spellID
                 local lb = FlatButton(content, "<", 22, 20); lb:SetPoint("TOPLEFT", 200, yy)
                 lb:SetScript("OnClick", function() Run("track move " .. id .. " left"); ns.ShowOptionsPage(idx) end)
@@ -4363,9 +4455,9 @@ local function ShowOptionsPage(idx)
                     v = math.floor(v / 2 + 0.5) * 2
                     Run("track width " .. id .. " " .. v); wl:SetText(v > 0 and ("width " .. v) or "width auto")
                 end)
-                local b = FlatButton(content, "Remove", 64, 20)
+                local b = FlatButton(content, e.group == "trinket" and "Equipped" or "Remove", 64, 20)
                 b:SetPoint("TOPLEFT", 450, yy)
-                b:SetScript("OnClick", function() Run("track remove " .. id); ns.ShowOptionsPage(idx) end)
+                if e.group == "trinket" then b:Disable() else b:SetScript("OnClick", function() Run("track remove " .. id); ns.ShowOptionsPage(idx) end) end
                 f.widgets[#f.widgets + 1] = lb; f.widgets[#f.widgets + 1] = rb; f.widgets[#f.widgets + 1] = wl; f.widgets[#f.widgets + 1] = sl
                 f.widgets[#f.widgets + 1] = b
             end
@@ -4779,6 +4871,20 @@ function PL.AddMenu(owner, L_)
     if not groups then Print("No spell list for %s yet.", tostring(cls)) return end
     local have = {}
     for _, e in ipairs(L_.items) do have[e.spellID or 0] = true end
+    -- my own column also offers on-use trinkets I have had equipped
+    if tmpl.tag == UnitName("player") then
+        local tr = {}
+        for itemID in pairs(DB.trinketSeen or {}) do
+            local id = ns.TrinketSpell(itemID)
+            local data = ns.TRINKET_DATA and ns.TRINKET_DATA[itemID]
+            if id then tr[#tr + 1] = id; if not LK.CDLEN[id] then LK.CDLEN[id] = (data and data.cd) or (DB.cdDur and DB.cdDur[id]) or 120 end end
+        end
+        if #tr > 0 then
+            table.sort(tr)
+            groups = { unpack(groups) }
+            groups[#groups + 1] = { "Trinkets", tr }
+        end
+    end
     local function add(id)
         local n = { time = 30, spellID = id, cd = LK.CDLEN[id] or 60, major = (LK.THRU[id] ~= nil) and (LK.CDLEN[id] or 0) >= 120,
             class = tmpl.class, classRGB = tmpl.classRGB, className = tmpl.className, tag = tmpl.tag, lane = tmpl.lane,
@@ -5835,8 +5941,20 @@ local function Slash(msg)
         DB.stackAll = not DB.stackAll; ReleaseAll(); Print("Stack column shows %s.", DB.stackAll and "everyone's planned casts" or "only my casts (and boss timers)")
     elseif cmd == "mine" then
         DB.mineOn = not DB.mineOn; ApplyMineLayout(); Print("Own-cooldowns column %s.", DB.mineOn and "on" or "off")
+    elseif cmd == "trinkets" then
+        DB.trinkets = not DB.trinkets; RebuildTracked(); Print("Equipped on-use trinkets %s.", DB.trinkets and "tracked (their own group after Other)" or "not tracked")
+    elseif cmd == "cdmlock" then
+        DB.cdmLocked = not (DB.cdmLocked ~= false); ApplyCDM()
+        Print(DB.cdmLocked == false and "Compact row unlocked - drag it where you want it, then /tl cdmlock." or "Compact row locked.")
+    elseif cmd == "cdmsize" then
+        local v = tonumber(arg); if v and v >= 12 then DB.cdmIcon = v; ApplyCDM() else Print("Usage: /tl cdmsize <px>  (now %d)", DB.cdmIcon) end
+    elseif cmd == "cdmall" then
+        DB.cdmAll = not DB.cdmAll; ApplyCDM(); Print("Compact row shows %s.", DB.cdmAll and "every tracked cooldown" or "only the ones the plan wants again")
+    elseif cmd == "cdmpos" then
+        DB.cdmPoint = nil; ApplyCDM(); Print("Compact row back in the middle of the screen.")
     elseif cmd == "cdm" then
-        DB.mineCDM = not DB.mineCDM; ApplyMineLayout(); Print(DB.mineCDM and "Countdowns now sit on your Cooldown Manager icons (red = hold it)." or "Countdowns back on the cooldown column.")
+        DB.mineCDM = not DB.mineCDM; ApplyMineLayout()
+        if DB.mineCDM then Print("Compact row on (red = hold it). /tl cdmlock to drag it over your cooldown icons, /tl cdmsize <px>, /tl cdmall.") else Print("Back to the cooldown column.") end
     elseif cmd == "sched" then
         DB.mineSched = not DB.mineSched; ReleaseMine(); ApplyMineLayout(); Print("Scheduled casts on the column %s.", DB.mineSched and "on" or "off")
     elseif cmd == "minelock" then
@@ -6031,7 +6149,7 @@ ev:RegisterEvent("START_TIMER")
 ev:RegisterEvent("CHAT_MSG_ADDON")
 ev:RegisterEvent("PLAYER_LOGIN")
 pcall(ev.RegisterEvent, ev, "CANCEL_PLAYER_COUNTDOWN") -- not present on every client
-for _, e in ipairs({ "PLAYER_ENTERING_WORLD", "PLAYER_SPECIALIZATION_CHANGED", "TRAIT_CONFIG_UPDATED", "SPELLS_CHANGED", "PLAYER_REGEN_ENABLED", "PLAYER_REGEN_DISABLED" }) do
+for _, e in ipairs({ "PLAYER_ENTERING_WORLD", "PLAYER_SPECIALIZATION_CHANGED", "TRAIT_CONFIG_UPDATED", "SPELLS_CHANGED", "PLAYER_REGEN_ENABLED", "PLAYER_REGEN_DISABLED", "PLAYER_EQUIPMENT_CHANGED", "ITEM_DATA_LOAD_RESULT" }) do
     pcall(ev.RegisterEvent, ev, e)
 end
 if ev.RegisterUnitEvent then pcall(ev.RegisterUnitEvent, ev, "UNIT_SPELLCAST_SUCCEEDED", "player") else pcall(ev.RegisterEvent, ev, "UNIT_SPELLCAST_SUCCEEDED") end
@@ -6078,6 +6196,12 @@ ev:SetScript("OnEvent", function(_, event, ...)
 
     elseif event == "PLAYER_ENTERING_WORLD" or event == "PLAYER_SPECIALIZATION_CHANGED" or event == "TRAIT_CONFIG_UPDATED" or event == "SPELLS_CHANGED" then
         if event ~= "PLAYER_SPECIALIZATION_CHANGED" or ... == "player" or ... == nil then QueueRebuild() end
+    elseif event == "PLAYER_EQUIPMENT_CHANGED" then
+        local slot = ...
+        if (slot == 13 or slot == 14) and DB.trinkets then QueueRebuild() end
+    elseif event == "ITEM_DATA_LOAD_RESULT" then
+        local itemID, ok = ...
+        if ok and DB.trinkets and itemID and not IsSecret(itemID) and not (function() for _, it in pairs(TR.ITEM_OF) do if it == itemID then return true end end end)() then QueueRebuild() end
 
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
         local unit, _, spellID = ...

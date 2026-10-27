@@ -1,8 +1,15 @@
 # Changelog
 
+## 1.3.0
+
+- CD Timeline: new compact row (`/tl cdm`) — each cooldown's icon with the countdown to its planned cast above it, red with a red cross while you should hold it, GO at the planned moment. It is CD Timeline's own frame, so it works with any Cooldown Manager skin: `/tl cdmlock` to drag it over your icons, `/tl cdmsize <px>`, `/tl cdmall`, `/tl cdmpos`.
+- CD Timeline: on-use trinkets are tracked like cooldowns. Equipped trinkets get their own group on the column, and any trinket you have worn can be added to a plan from a column's + menu (Trinkets).
+- DiedTo: end-of-fight summary. One line per death with a probable cause (one-shot, stood in it, interruptible, burst, ticked down, low health), in chat and on a new "fight" tab in the death window. Click a line for the hit-by-hit. Settings > End of fight; `/diedto fight` reprints it, `/diedto test fight` fakes one.
+- Fixes: the planner's + menu errored instead of opening (a stray internal name from the trinket work).
+
 ## 1.2.1
 
-- CDTimeline 0.31.0: new option to put the plan's countdowns on Blizzard's Cooldown Manager icons instead of the cooldown column (`/tl cdm`, or Settings > Column). The number sits just above each icon, turns red while you should hold the spell (with a red cross over the icon), and shows GO at the planned time.
+- CDTimeline 0.31.0: first attempt at countdowns on Blizzard's Cooldown Manager icons (replaced in 1.3.0 by the compact row, which works with reskinned Cooldown Managers too).
 
 ## 1.2.0 – 2026-10-27
 
