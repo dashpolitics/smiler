@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.1
+
+- CDTimeline 0.31.0: new option to put the plan's countdowns on Blizzard's Cooldown Manager icons instead of the cooldown column (`/tl cdm`, or Settings > Column). The number sits just above each icon, turns red while you should hold the spell (with a red cross over the icon), and shows GO at the planned time.
+
 ## 1.2.0 – 2026-10-27
 
 - **New: SmilerStash 0.1.0** – loot currencies for all your characters, upgrade heads-ups, this week's Venomstone sources. `/stash`

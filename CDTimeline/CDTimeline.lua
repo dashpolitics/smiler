@@ -54,6 +54,7 @@ local DEFAULTS = {
     graphAll   = false,  -- graph: rows for every healer, not just me (/tl graph all)
     phaseLearned = {},   -- [encounterID] = { [difficultyID] = { [stage] = seconds since pull } } from the last pull's stage changes
     mineOn     = true,   -- the own-cooldowns column (/tl mine)
+    mineCDM    = false,  -- draw the plan's countdowns on Blizzard's Cooldown Manager icons instead of the column (/tl cdm)
     minePoint  = nil,    -- nil = attached to the right of the plan bar, landing lines aligned; set when you drag it
     mineOffset = 10,     -- gap between the plan bar and the attached column
     mineSched  = true,   -- show the plan's scheduled casts of each tracked spell (/tl sched)
@@ -1815,6 +1816,7 @@ local function ApplyMineLayout()
     if DB.layout == "stack" then
         -- the column lives inside the stack frame: top row + the shared column
         mineBar:Hide(); mineBar:SetScript("OnUpdate", nil)
+        if ns.ApplyCDM then ns.ApplyCDM() end
         return
     end
     if DB.minePoint and not ns.ValidPoint(DB.minePoint) then DB.minePoint = nil end
@@ -1871,13 +1873,14 @@ local function ApplyMineLayout()
         t.fs1:Hide(); t.fs2:Hide()
     end
     for i = #mine.list + 1, #mine.tops do mine.tops[i].fs1:Hide(); mine.tops[i].fs2:Hide() end
-    local show = DB.mineOn and not DB.hidden and #mine.list > 0
+    local show = DB.mineOn and not DB.hidden and #mine.list > 0 and not DB.mineCDM
     if show and DB.mineCombat and DB.locked then
         local inCombat = (UnitAffectingCombat and UnitAffectingCombat("player")) or (InCombatLockdown and InCombatLockdown())
         if not inCombat then show = false end
     end
     if show then mineBar:Show() else mineBar:Hide(); ReleaseMine() end
     mineBar:SetScript("OnUpdate", show and ns.MineUpdate or nil)
+    if ns.ApplyCDM then ns.ApplyCDM() end
 end
 ns.ApplyMineLayout = ApplyMineLayout
 
@@ -2109,6 +2112,141 @@ local function MineUpdate()
     end
 end
 
+-- Cooldown Manager mode (/tl cdm): the plan's countdown sits just above the spell's icon on Blizzard's
+-- Essential / Utility cooldown viewers - red while you should hold it (plus a red cross on the icon), "GO" at 0.
+local cdm = { frame = CreateFrame("Frame", "CDTimelineCDM", UIParent), map = {}, over = {}, lastScan = 0, warned = false }
+cdm.frame:Hide()
+
+local function CDMViewers()
+    local v = {}
+    for _, name in ipairs({ "EssentialCooldownViewer", "UtilityCooldownViewer", "BuffIconCooldownViewer" }) do
+        local f = _G[name]
+        if f then v[#v + 1] = f end
+    end
+    return v
+end
+
+-- spellID of a viewer item frame (Blizzard caches cooldownInfo on the item; fall back to the C_CooldownViewer lookup)
+local function CDMItemSpell(item)
+    local info = item.cooldownInfo
+    if not info and item.GetCooldownID and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo then
+        local ok, id = pcall(item.GetCooldownID, item)
+        if ok and id and not IsSecret(id) then
+            local ok2, i2 = pcall(C_CooldownViewer.GetCooldownViewerCooldownInfo, id)
+            if ok2 then info = i2 end
+        end
+    end
+    if type(info) ~= "table" then return end
+    local ids = {}
+    for _, k in ipairs({ "overrideSpellID", "spellID" }) do
+        local id = info[k]
+        if id and not IsSecret(id) and id ~= 0 then ids[#ids + 1] = id end
+    end
+    if type(info.linkedSpellIDs) == "table" then
+        for _, id in ipairs(info.linkedSpellIDs) do if id and not IsSecret(id) then ids[#ids + 1] = id end end
+    end
+    return ids
+end
+
+-- spellID -> the viewer item frame showing it; rescanned every second (the viewers re-lay out on spec / talent changes)
+local function CDMScan(now)
+    if now - cdm.lastScan < 1 then return end
+    cdm.lastScan = now
+    wipe(cdm.map)
+    local any = false
+    for _, viewer in ipairs(CDMViewers()) do
+        any = true
+        local items
+        if viewer.itemFramePool and viewer.itemFramePool.EnumerateActive then
+            items = {}
+            for item in viewer.itemFramePool:EnumerateActive() do items[#items + 1] = item end
+        elseif viewer.GetItemFrames then
+            local ok, r = pcall(viewer.GetItemFrames, viewer); items = ok and r or nil
+        end
+        if not items then items = { viewer:GetChildren() } end
+        for _, item in ipairs(items) do
+            if type(item) == "table" and item.IsShown then
+                local ids = CDMItemSpell(item)
+                if ids then for _, id in ipairs(ids) do if not cdm.map[id] then cdm.map[id] = item end end end
+            end
+        end
+    end
+    if not any and not cdm.warned then
+        cdm.warned = true
+        Print("Cooldown Manager frames not found - turn it on in Options > Gameplay > Cooldown Manager (or /tl cdm to go back to the column).")
+    end
+end
+
+local function CDMOverlay(item)
+    local o = cdm.over[item]
+    if o then return o end
+    o = CreateFrame("Frame", nil, item)
+    o:SetAllPoints(item)
+    o:SetFrameLevel(item:GetFrameLevel() + 10)
+    o.num = o:CreateFontString(nil, "OVERLAY")
+    o.num:SetPoint("BOTTOM", item, "TOP", 0, 1)
+    o.num:SetJustifyH("CENTER"); o.num:SetWordWrap(false)
+    o.cross = o:CreateTexture(nil, "OVERLAY", nil, 7)
+    o.cross:SetTexture("Interface\\RaidFrame\\ReadyCheck-NotReady")
+    o.cross:SetPoint("CENTER", item, "CENTER", 0, 0)
+    o.cross:SetAlpha(0.9)
+    o.cross:Hide()
+    cdm.over[item] = o
+    return o
+end
+
+local function CDMUpdate()
+    local now = GetTime()
+    local elapsed = state.active and (now - state.startTime) or nil
+    MineTick(now, elapsed, DB.mineIcon)
+    CDMScan(now)
+    local used = {}
+    local look = DB.lookahead
+    for _, e in ipairs(mine.list) do
+        local item = cdm.map[e.spellID]
+        if item then
+            local o = CDMOverlay(item)
+            used[item] = true
+            local rem, sr = e.rem, e.schedRem
+            if not e.sched then
+                o.num:Hide(); o.cross:Hide()
+            else
+                local w = item:GetWidth() or 36
+                ApplyFont(o.num, math.max(8, DB.fontSize + 1), "OUTLINE")
+                o.num:SetWidth(w + 30)
+                local hold = rem <= 0 and sr > 0 and sr < ModelDuration(e.spellID) - 0.5
+                local num = sr < 60 and tostring(math.ceil(sr)) or string.format("%d:%02d", math.floor(sr / 60), math.floor(sr % 60))
+                local red = false
+                if rem > 0 and rem > sr + 0.5 then o.num:SetText(sr <= 0 and ("late " .. math.ceil(rem)) or ("+" .. math.ceil(rem - sr))); red = true
+                elseif sr <= 0 then o.num:SetText("GO"); Col(o.num, T.fg)
+                elseif hold then o.num:SetText(num); red = true
+                else o.num:SetText(num); if sr <= 5 then Col(o.num, T.fg) elseif sr <= look then Col(o.num, T.fg2) else Col(o.num, T.muted) end end
+                if red then Col(o.num, LK.CB.vermillion) end
+                if sr <= 5 and sr > 0 and not hold then ApplyFont(o.num, DB.fontSize + 4, "OUTLINE") end
+                o.num:Show()
+                if hold then
+                    local cs = math.floor(w * 0.5)
+                    o.cross:SetSize(cs, cs); o.cross:Show()
+                else
+                    o.cross:Hide()
+                end
+            end
+            o:Show()
+        end
+    end
+    for item, o in pairs(cdm.over) do if not used[item] then o.num:Hide(); o.cross:Hide(); o:Hide() end end
+end
+
+local function ApplyCDM()
+    local on = DB.mineCDM and not DB.hidden and #mine.list > 0
+    cdm.frame:SetScript("OnUpdate", on and CDMUpdate or nil)
+    if on then cdm.frame:Show(); cdm.lastScan = 0 else
+        cdm.frame:Hide()
+        for _, o in pairs(cdm.over) do o.num:Hide(); o.cross:Hide(); o:Hide() end
+    end
+end
+ns.ApplyCDM = ApplyCDM
+
 -- is this plan entry one of my tracked spells? (then it is drawn in that spell's column, not the crosshair lane)
 local function TrackedEntry(e)
     if e.isBoss or e.pull or not IsMine(e) then return nil end
@@ -2183,7 +2321,7 @@ local function StackTick(now, elapsed)
         Col(t.fs1, T.muted)
         ApplyFont(t.fs2, DB.fontSize + 5, "OUTLINE")
         ApplyFont(t.fs1, DB.fontSize - 1)
-        if not e.sched then t.fs1:Hide(); t.fs2:Hide()
+        if not e.sched or DB.mineCDM then t.fs1:Hide(); t.fs2:Hide()   -- (CDM mode: the countdown lives on the Cooldown Manager icon)
         else
             -- above: the hit it's for; below, big: how long until you press it
             local hb = LK.linkOf[e.sched]
@@ -4045,6 +4183,7 @@ local OPTION_PAGES = {
     { "Column", {
         { t = "text", text = "With the HUD, your cooldowns sit in a row on top of it (icon, the hit it's for, when to press it); the HUD's own icons do the falling. In the single / lanes layouts they keep their own column beside the plan bar." },
         { t = "toggle", label = "Show the column", get = function() return DB.mineOn end, cmd = function() return "mine" end },
+        { t = "toggle", label = "Instead: put the countdowns on Blizzard's Cooldown Manager icons (red while you should hold, with a cross on the icon)", get = function() return DB.mineCDM end, cmd = function() return "cdm" end },
         { t = "toggle", label = "Unlock the cooldown row (move it on its own; the HUD stays locked)", get = function() return DB.mineLocked == false end, cmd = function() return "minelock" end },
         { t = "button", label = "Put it back in its anchored place", cmd = "minepos reset" },
         { t = "num", label = "Gap to the plan bar", get = function() return DB.mineOffset end, min = 0, max = 100, step = 1, cmd = function(v) return "mineoffset " .. v end },
@@ -5696,6 +5835,8 @@ local function Slash(msg)
         DB.stackAll = not DB.stackAll; ReleaseAll(); Print("Stack column shows %s.", DB.stackAll and "everyone's planned casts" or "only my casts (and boss timers)")
     elseif cmd == "mine" then
         DB.mineOn = not DB.mineOn; ApplyMineLayout(); Print("Own-cooldowns column %s.", DB.mineOn and "on" or "off")
+    elseif cmd == "cdm" then
+        DB.mineCDM = not DB.mineCDM; ApplyMineLayout(); Print(DB.mineCDM and "Countdowns now sit on your Cooldown Manager icons (red = hold it)." or "Countdowns back on the cooldown column.")
     elseif cmd == "sched" then
         DB.mineSched = not DB.mineSched; ReleaseMine(); ApplyMineLayout(); Print("Scheduled casts on the column %s.", DB.mineSched and "on" or "off")
     elseif cmd == "minelock" then

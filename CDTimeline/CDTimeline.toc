@@ -2,7 +2,7 @@
 ## Title: CD Timeline
 ## Notes: Multi-lane sliding timeline — boss mechanics and healer cooldowns from the Ramp Planner (or a Viserio/NSRT string) approach a now line.
 ## Author: Tom
-## Version: 0.30.4
+## Version: 0.31.0
 ## OptionalDeps: Smiler
 ## SavedVariables: CDTimelineDB
 ## IconTexture: 135936
