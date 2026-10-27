@@ -1,0 +1,18 @@
+## Interface: 120105, 120100, 120007
+## Title: |cffb66effSmiler|r
+## Notes: The shared look, settings window, menu and alerts for SmilerKeys, CD Timeline, RampNotes, DiedTo, Rewound and LustReady. /smiler
+## Author: Tom Miller
+## Version: 1.1.0
+## X-License: MIT
+## Category: Dungeons & Raids
+## SavedVariables: SmilerDB
+## IconTexture: Interface\AddOns\Smiler\Media\logo
+## AddonCompartmentFunc: Smiler_OnCompartmentClick
+## AddonCompartmentFuncOnEnter: Smiler_OnCompartmentEnter
+## AddonCompartmentFuncOnLeave: Smiler_OnCompartmentLeave
+
+Core.lua
+Widgets.lua
+Toast.lua
+Settings.lua
+Menu.lua

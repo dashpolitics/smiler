@@ -1,0 +1,4 @@
+Barlow, Barlow Condensed: SIL Open Font License 1.1 (OFL-Barlow.txt).
+Poppins (Indian Type Foundry): SIL Open Font License 1.1, https://openfontlicense.org
+DejaVu Sans Condensed: Bitstream Vera Fonts licence (free to use, modify and redistribute; the names
+"Bitstream Vera" and "DejaVu" may not be used for modified versions), https://dejavu-fonts.github.io/License.html

@@ -1,0 +1,25 @@
+## Interface: 120105, 120007
+## Title: |cffb98cffSmilerKeys|r
+## Notes: Your friends' best timed M+ keys, current keystones and Resilient levels in one grid, plus loot tables and a wishlist. /sk
+## Author: Tom Miller
+## Version: 0.22.2
+## X-License: MIT
+## Category: Dungeons & Raids
+## SavedVariables: SmilerKeysDB
+## IconTexture: Interface\Icons\INV_Misc_Key_03
+## OptionalDeps: Smiler
+
+Core.lua
+Theme.lua
+Data.lua
+Comm.lua
+Teleport.lua
+UI.lua
+Loot.lua
+CraftedData.lua
+LootUI.lua
+Paperdoll.lua
+Import.lua
+Guide.lua
+Planner.lua
+SmilerTabs.lua

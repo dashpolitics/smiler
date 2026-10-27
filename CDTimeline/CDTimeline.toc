@@ -1,0 +1,10 @@
+## Interface: 120105, 120100, 120000
+## Title: CD Timeline
+## Notes: Multi-lane sliding timeline — boss mechanics and healer cooldowns from the Ramp Planner (or a Viserio/NSRT string) approach a now line.
+## Author: Tom
+## Version: 0.30.2
+## OptionalDeps: Smiler
+## SavedVariables: CDTimelineDB
+## IconTexture: 135936
+
+CDTimeline.lua

@@ -1,0 +1,10 @@
+## Interface: 120005, 120007, 120100, 120105
+## Title: RampNotes
+## Notes: Plain on-screen notes with draggable spell rows for remembering ramps and rotations.
+## Author: Tom Miller
+## Version: 1.1.0
+## OptionalDeps: Smiler
+## SavedVariables: RampNotesDB
+## IconTexture: Interface\Icons\INV_Misc_Note_01
+
+RampNotes.lua

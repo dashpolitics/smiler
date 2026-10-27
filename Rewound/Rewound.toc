@@ -1,0 +1,11 @@
+## Interface: 120105, 120007
+## Title: |cffb98cffRewound|r
+## Notes: Tracks your Preservation Evoker Rewind healing and announces a new high score. /rewound
+## Author: Tom Miller
+## Version: 0.3.1
+## SavedVariables: RewoundDB
+## IconTexture: Interface\Icons\Ability_Evoker_Rewind
+## OptionalDeps: Smiler
+
+Rewound.lua
+Options.lua

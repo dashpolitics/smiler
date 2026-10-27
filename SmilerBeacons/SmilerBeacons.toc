@@ -1,0 +1,10 @@
+## Interface: 120105, 120100
+## Title: |cffb98cffSmilerBeacons|r
+## Notes: Holy Paladin: warns when Beacon of Light or Beacon of Faith isn't on anyone while you're in a group. Only active with the Beacon of Faith talent. /beacons
+## Author: Tom Miller
+## Version: 0.1.0
+## SavedVariables: SmilerBeaconsDB
+## IconTexture: Interface\Icons\Ability_Paladin_BeaconofLight
+## OptionalDeps: Smiler
+
+Beacons.lua
