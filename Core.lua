@@ -3,7 +3,7 @@
 local ADDON, S = ...
 Smiler = S
 
-S.VERSION = "1.3.0"
+S.VERSION = "1.4.0"
 
 ---------------------------------------------------------------- Crystal Ball palette
 -- One meaning per gem colour, and each one always comes with a shape or a word.
@@ -123,7 +123,7 @@ S.MODULES = {
     desc = "Your friends' best timed keys, current keystones and Resilient levels in one grid.",
     menu = "SmilerKeys", open = slash("SMILERKEYS", "") },
   { key = "Loot", addon = "SmilerKeys", partOf = "SmilerKeys", title = "Loot & wishlist", slash = "/sk loot",
-    desc = "A wishlist box for every gear slot beside your character sheet, and where to bonus roll or farm.",
+    desc = "A wishlist box for every gear slot beside your character sheet, a target / BiS / alternatives row per slot, and where to bonus roll or farm.",
     menu = "Loot & wishlist", open = slash("SMILERKEYS", "loot") },
   { key = "CDTimeline", addon = "CDTimeline", title = "CD Timeline", slash = "/tl",
     desc = "Boss mechanics and healer cooldowns sliding towards a now line.",

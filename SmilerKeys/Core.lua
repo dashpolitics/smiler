@@ -255,6 +255,7 @@ local HELP = {
   "/sk glow  – toggle upgrade glow (hovering a key always shows who it upgrades)",
   "/sk tp <column> <spellID|clear>  – set the teleport for a dungeon column by hand",
   "/sk abbr <column> <text>  – rename a dungeon column (e.g. /sk abbr 3 ARAK)",
+  "/sk targets  – one row per slot: your target, your BiS and alternatives, in your own order",
   "/sk unhide  – show players you hid",
   "/sk forget <name>  – drop one person · /sk clear – forget everyone except you",
   "/sk test  – toggle fake players for layout testing",
@@ -274,6 +275,8 @@ SlashCmdList.SMILERKEYS = function(msg)
     ns.GuideOpen()
   elseif cmd == "plan" or cmd == "where" then
     ns.PlannerOpen()
+  elseif cmd == "targets" or cmd == "target" then
+    ns.TargetsOpen()
   elseif cmd == "browse" then
     ns.LootBrowse({})
   elseif cmd == "import" then

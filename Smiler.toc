@@ -2,7 +2,7 @@
 ## Title: |cffb66effSmiler|r
 ## Notes: The shared look, settings window, menu and alerts for the Smiler add-ons (SmilerKeys, CD Timeline, DiedTo, Stash, Vault and more). /smiler
 ## Author: Tom Miller
-## Version: 1.3.0
+## Version: 1.4.0
 ## X-Wago-ID: 56nb8a69
 ## X-License: MIT
 ## Category: Dungeons & Raids

@@ -5,7 +5,7 @@ A pack of World of Warcraft add-ons for Midnight, sharing one look (Crystal Ball
 | Add-on | What it does | Command |
 |---|---|---|
 | **Smiler** | The shared settings window, menu button and alerts. Everything else works without it, with slash commands only. | `/smiler` |
-| **SmilerKeys** | Your friends' best timed keys, keystones and Resilient levels in one grid; a wishlist for every gear slot beside your character sheet; a gear guide, QE Live import, embellishment planning and a week-by-week "where to go" planner for bonus rolls and kills. | `/sk`, `/sk loot`, `/sk plan` |
+| **SmilerKeys** | Your friends' best timed keys, keystones and Resilient levels in one grid; a wishlist for every gear slot beside your character sheet; a gear guide, QE Live import, embellishment planning, a target / BiS / alternatives row per slot you can drag into your own priority order, and a week-by-week "where to go" planner for bonus rolls and kills. | `/sk`, `/sk loot`, `/sk targets`, `/sk plan` |
 | **CD Timeline** | Boss mechanics and healer cooldowns sliding towards a now line, a fight graph, and a planner with built-in Heroic and Mythic damage profiles for every boss of the tier. On-use trinkets are planned like any other cooldown, and a compact row you drag over your cooldown icons shows when to press each one. | `/tl`, `/tl plan`, `/tl cdm` |
 | **Smiler_Fights** | The damage profiles CD Timeline loads on demand. | – |
 | **RampNotes** | Plain on-screen notes with draggable spell rows for ramps and rotations. | `/rn` |

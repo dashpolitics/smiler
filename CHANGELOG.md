@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.0
+
+- SmilerKeys: **Targets** (`/sk targets`, or the button beside Where to go). One row per slot that still has an upgrade in it, with three picks: the **target** you can realistically get now, the **BiS** you are working towards, and **alternatives** worth taking on the way. Items you cannot reach yet (Mythic bosses past your farm count) are marked "not yet".
+- Every pick goes on the wishlist, and the list on the right holds all of them in one order: drag a row to move it, and the order is written back as priorities 1-15, which is what weights "Where to go". So re-ordering your targets re-plans your bonus rolls, kills and crafts.
+
 ## 1.3.0
 
 - CD Timeline: new compact row (`/tl cdm`) — each cooldown's icon with the countdown to its planned cast above it, red with a red cross while you should hold it, GO at the planned moment. It is CD Timeline's own frame, so it works with any Cooldown Manager skin: `/tl cdmlock` to drag it over your icons, `/tl cdmsize <px>`, `/tl cdmall`, `/tl cdmpos`.

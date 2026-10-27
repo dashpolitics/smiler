@@ -1167,6 +1167,210 @@ function L.ToggleSlotDone(slotKey)
   if want == (auto and true or false) then m[slotKey] = nil else m[slotKey] = want end
 end
 
+---------------------------------------------------------------- targets per slot
+-- Three picks per slot, so a slot reads as one line: the TARGET you can realistically get now,
+-- the BIS you are working towards (often out of reach this week), and ALTERNATIVES worth taking.
+-- Every pick is on the wishlist, so "Where to go" plans for it; the order you drag them into sets
+-- their priority, which is what weights the plan.
+L.PICK_KINDS = { "target", "bis", "alt" }
+L.PICK_LABEL = { target = "Target", bis = "BiS", alt = "Alternative" }
+
+local function pickStore()
+  ns.db.picks = ns.db.picks or {}
+  local k = profKey(ns.db.picks)
+  ns.db.picks[k] = ns.db.picks[k] or {}
+  return ns.db.picks[k]
+end
+
+-- { target = id, bis = id, alts = { id, ... } } for one slot
+function L.SlotPicks(slotKey)
+  local st = pickStore()
+  local p = st[slotKey]
+  if not p then p = { alts = {} }; st[slotKey] = p end
+  p.alts = p.alts or {}
+  return p
+end
+
+-- what an item is picked as, and in which slot
+function L.PickKindOf(id)
+  if not id then return nil end
+  for slot, p in pairs(pickStore()) do
+    if p.target == id then return "target", slot end
+    if p.bis == id then return "bis", slot end
+    for _, a in ipairs(p.alts or {}) do if a == id then return "alt", slot end end
+  end
+end
+
+-- the item record for an id (scan cache first)
+function L.ItemByID(id)
+  if not id then return nil end
+  for _, it in ipairs(L.items or {}) do if it.id == id then return it end end
+end
+
+-- Can you get this now? Raid items only count at a difficulty you are actually killing: Mythic
+-- bosses past your farm count are "not yet", everything else (Heroic and below, M+, delves,
+-- crafting) is reachable this week.
+function L.Achievable(it)
+  if not it then return false end
+  if not it.raid then return true end
+  local farm = (L.PlanOpts and L.PlanOpts().farm) or L.MythicBossCount()
+  for _, r in ipairs(L.Routes(it)) do
+    local d = r.diff
+    if not d then return true end
+    -- only count a difficulty the item actually drops at
+    if it.ilvl and it.ilvl[d] then
+      if d < 16 then return true end
+      if not it.encIndex or it.encIndex <= (farm or 0) then return true end
+    end
+  end
+  return false
+end
+
+-- Everything that would be an upgrade in one slot, best first (QE score, then the item level it reaches)
+function L.SlotCandidates(slotKey)
+  local q = L.QEScores and L.QEScores()
+  q = (q and q.scores) or {}
+  local out = {}
+  for _, it in ipairs(L.items or {}) do
+    if it.slot == slotKey and not it.hidden and not it.reagent and (it.id or 0) > 0 then
+      local max = L.MaxIlvl(it)
+      local gain = L.Gain(it, max)
+      if max and gain and gain > 0 then
+        out[#out + 1] = { it = it, id = it.id, max = max, gain = gain, qe = q[it.id],
+                          now = L.Achievable(it), kind = L.PickKindOf(it.id) }
+      end
+    end
+  end
+  table.sort(out, function(a, b)
+    if (a.qe or -1) ~= (b.qe or -1) then return (a.qe or -1) > (b.qe or -1) end
+    if a.max ~= b.max then return a.max > b.max end
+    return (a.it.name or "") < (b.it.name or "")
+  end)
+  return out
+end
+
+-- Slots with at least one upgrade available, in paperdoll order
+function L.SlotsWithUpgrades()
+  local out = {}
+  for _, s in ipairs(L.SLOTS) do
+    if s.key ~= "emb" and s.key ~= "other" then
+      local c = L.SlotCandidates(s.key)
+      if #c > 0 or L.SlotPicks(s.key).target or L.SlotPicks(s.key).bis or #L.SlotPicks(s.key).alts > 0 then
+        out[#out + 1] = { slot = s, cands = c, picks = L.SlotPicks(s.key), done = L.SlotState(s.key) }
+      end
+    end
+  end
+  return out
+end
+
+-- make sure a picked item is on the wishlist (that is what the planner reads)
+local function ensureWished(it)
+  if not it then return end
+  if not L.IsWished(it.id) then L.Add(it, it.slot, { mode = it.bonus and "bonus" or "drop" }) end
+end
+local function unwishIfUnpicked(id)
+  if not id or L.PickKindOf(id) then return end
+  for slot, list in pairs(L.Wish()) do
+    for i = #list, 1, -1 do if list[i].id == id then table.remove(list, i) end end
+  end
+end
+
+-- kind = "target" | "bis" | "alt". Target and BiS hold one item each; alternatives hold several.
+function L.SetTarget(slotKey, kind, item)
+  local it = type(item) == "table" and item or L.ItemByID(item)
+  if not it then return false end
+  slotKey = slotKey or it.slot
+  if it.slot ~= slotKey then return false end
+  local p = L.SlotPicks(slotKey)
+  -- an item can only hold one role in its slot
+  local was = L.PickKindOf(it.id)
+  if was == "alt" then
+    for i = #p.alts, 1, -1 do if p.alts[i] == it.id then table.remove(p.alts, i) end end
+  elseif was == "target" then p.target = nil
+  elseif was == "bis" then p.bis = nil; if L.IsBiS(it.id) then L.ToggleBiS(it.id) end
+  end
+  if kind == "target" then
+    local old = p.target; p.target = it.id
+    if old and old ~= it.id then unwishIfUnpicked(old) end
+  elseif kind == "bis" then
+    local old = p.bis
+    if old and old ~= it.id and L.IsBiS(old) then L.ToggleBiS(old) end
+    p.bis = it.id
+    if not L.IsBiS(it.id) then L.ToggleBiS(it.id) end
+    if old and old ~= it.id then unwishIfUnpicked(old) end
+  else
+    for _, a in ipairs(p.alts) do if a == it.id then return true end end
+    p.alts[#p.alts + 1] = it.id
+  end
+  ensureWished(it)
+  return true
+end
+
+function L.ClearTarget(slotKey, kind, id)
+  local p = L.SlotPicks(slotKey)
+  local gone
+  if kind == "target" then gone = p.target; p.target = nil
+  elseif kind == "bis" then
+    gone = p.bis; p.bis = nil
+    if gone and L.IsBiS(gone) then L.ToggleBiS(gone) end
+  else
+    for i = #p.alts, 1, -1 do if p.alts[i] == id or not id then gone = p.alts[i]; table.remove(p.alts, i); if id then break end end end
+  end
+  unwishIfUnpicked(gone)
+end
+
+-- Every pick as one flat list in your priority order: items you have ordered yourself first
+-- (priority 1..15), then the rest by QE score. This is the list you drag.
+function L.TargetList()
+  local q = L.QEScores and L.QEScores()
+  q = (q and q.scores) or {}
+  local out = {}
+  local function push(id, kind, slot)
+    local it = L.ItemByID(id)
+    if not it then return end
+    out[#out + 1] = { id = id, it = it, kind = kind, slot = slot, qe = q[id],
+                      prio = L.Prio(id), auto = L.IsAutoPrio(id), max = L.MaxIlvl(it), now = L.Achievable(it) }
+  end
+  for _, s in ipairs(L.SLOTS) do
+    local p = pickStore()[s.key]
+    if p then
+      if p.target then push(p.target, "target", s.key) end
+      if p.bis then push(p.bis, "bis", s.key) end
+      for _, a in ipairs(p.alts or {}) do push(a, "alt", s.key) end
+    end
+  end
+  local manual = {}
+  for _, e in ipairs(out) do if e.prio and not e.auto then manual[#manual + 1] = e end end
+  table.sort(out, function(a, b)
+    local am, bm = (a.prio and not a.auto), (b.prio and not b.auto)
+    if am ~= bm then return am end
+    if am and bm and a.prio ~= b.prio then return a.prio < b.prio end
+    if (a.qe or -1) ~= (b.qe or -1) then return (a.qe or -1) > (b.qe or -1) end
+    return (a.max or 0) > (b.max or 0)
+  end)
+  return out, #manual
+end
+
+-- Dragging writes the order back as priorities 1..n, so the planner weights them the way you see them.
+function L.ApplyTargetOrder(ids)
+  for i, id in ipairs(ids) do L.SetPrio(id, math.min(i, L.PRIO_MAX)) end
+end
+
+-- Move one pick up or down the list (and write the whole order back)
+function L.MoveTarget(id, delta)
+  local list = L.TargetList()
+  local at
+  for i, e in ipairs(list) do if e.id == id then at = i break end end
+  if not at then return end
+  local to = math.max(1, math.min(#list, at + delta))
+  if to == at then return end
+  local e = table.remove(list, at)
+  table.insert(list, to, e)
+  local ids = {}
+  for i, x in ipairs(list) do ids[i] = x.id end
+  L.ApplyTargetOrder(ids)
+end
+
 ---------------------------------------------------------------- plans: where to spend what
 -- kind: "bonus" = bosses/dungeons to spend bonus rolls on (wishlist items from rollable sources)
 --       "farm"  = items you're after as drops · "vault" = Great Vault picks · "craft" = crafting + Labyrinth
