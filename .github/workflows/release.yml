@@ -8,6 +8,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+  actions: write
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -22,12 +23,16 @@ jobs:
           echo "version=$ver" >> "$GITHUB_OUTPUT"
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then echo "release=yes" >> "$GITHUB_OUTPUT"; exit 0; fi
           if git rev-parse -q --verify "refs/tags/v$ver" >/dev/null; then
-            echo "v$ver already exists - nothing to release"; echo "release=no" >> "$GITHUB_OUTPUT"; exit 0
+            if gh release view "v$ver" >/dev/null 2>&1; then
+              echo "v$ver is already released - nothing to do"; echo "release=no" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            echo "v$ver is tagged but not released yet - building it"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "v$ver" -m "Smiler v$ver"
+            git push origin "v$ver"
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "v$ver" -m "Smiler v$ver"
-          git push origin "v$ver"
           # build from the tag itself, so the packager sees a proper release (not a branch alpha)
           gh workflow run release.yml --ref "v$ver"
           echo "release=dispatched" >> "$GITHUB_OUTPUT"
