@@ -4,7 +4,7 @@
 -- and says whether you're on pace to time it.
 local ADDON, ns = ...
 SmilerSplits = ns
-ns.VERSION = "0.1.0"
+ns.VERSION = "0.2.0"
 
 local S = Smiler
 local isSecret = issecretvalue or function() return false end
@@ -281,8 +281,8 @@ end
 -- rows in reference order: { name, ref, t, d, live, pending }
 function ns.Compute(run, ref, now)
   local out = { rows = {}, now = now }
-  local mine = {}
-  for _, s in ipairs(run.splits) do mine[s.id] = s end
+  local mine, byName = {}, {}
+  for _, s in ipairs(run.splits) do mine[s.id] = s; if s.name then byName[s.name:lower()] = s end end
   if db.forces and run.forces and run.forces[100] then mine.forces = { id = "forces", name = "Enemy forces", t = run.forces[100] } end
 
   local checkpoints = {}
@@ -294,7 +294,7 @@ function ns.Compute(run, ref, now)
   local seen, lastT, lastD, nextRef = {}, nil, nil, nil
   for _, c in ipairs(checkpoints) do
     seen[c.id] = true
-    local m = mine[c.id]
+    local m = mine[c.id] or (c.name and byName[c.name:lower()])
     local row = { id = c.id, name = c.name, ref = c.t }
     if m then
       row.t, row.d = m.t, m.t - c.t
@@ -306,8 +306,10 @@ function ns.Compute(run, ref, now)
     end
     out.rows[#out.rows + 1] = row
   end
+  local seenName = {}
+  for _, c in ipairs(checkpoints) do if c.name then seenName[c.name:lower()] = true end end
   for _, s in ipairs(run.splits) do
-    if not seen[s.id] then out.rows[#out.rows + 1] = { id = s.id, name = s.name, t = s.t } end
+    if not seen[s.id] and not (s.name and seenName[s.name:lower()]) then out.rows[#out.rows + 1] = { id = s.id, name = s.name, t = s.t } end
   end
   if mine.forces and not seen.forces then out.rows[#out.rows + 1] = { id = "forces", name = "Enemy forces", t = mine.forces.t } end
 
@@ -515,6 +517,85 @@ function ns.Test()
   C_Timer.After(30, function() if cur and cur.test then cur = nil; ns.ref = nil; refreshWindow() end end)
 end
 
+---------------------------------------------------------------- share / import
+-- SKSPLIT1;map=375;name=Kings' Rest;lvl=17;time=1756;limit=1980;timed=1;date=1761232499;forces=1156;boss=2139:The Golden Serpent:339|2142:...
+local function esc(x) return (tostring(x or ""):gsub("[;|:=]", " ")) end
+function ns.Export(r)
+  if not r or not r.splits then return nil end
+  local b = {}
+  for _, sp in ipairs(r.splits) do b[#b + 1] = string.format("%s:%s:%d", tostring(sp.id or 0), esc(sp.name), math.floor(sp.t or 0)) end
+  return string.format("SKSPLIT1;map=%d;name=%s;lvl=%d;time=%d;limit=%d;timed=%d;date=%d;forces=%d;boss=%s",
+    r.mapID or 0, esc(r.name), r.level or 0, math.floor(r.time or 0), math.floor(r.timeLimit or 0), r.timed and 1 or 0,
+    r.date or 0, math.floor(r.forces and r.forces[100] or 0), table.concat(b, "|"))
+end
+
+local function mapByName(name)
+  if not (name and C_ChallengeMode and C_ChallengeMode.GetMapTable) then return nil end
+  for _, id in ipairs(C_ChallengeMode.GetMapTable() or {}) do
+    local n, _, limit = C_ChallengeMode.GetMapUIInfo(id)
+    if n and n:lower() == name:lower() then return id, limit end
+  end
+end
+
+function ns.Import(text)
+  text = (text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  if not text:find("^SKSPLIT1;") then return nil, "not a splits string (it starts with SKSPLIT1)" end
+  local f = {}
+  for k, v in text:gmatch(";([%w_]+)=([^;]*)") do f[k] = v end
+  local mapID = tonumber(f.map) or 0
+  local name, limit = mapInfo(mapID)
+  if not name then
+    local id, lim = mapByName(f.name)
+    if id then mapID, name, limit = id, f.name, lim end
+  end
+  if not name or mapID == 0 then return nil, "unknown dungeon '" .. tostring(f.name) .. "'" end
+  local r = { mapID = mapID, level = tonumber(f.lvl) or 0, name = name, timeLimit = limit or tonumber(f.limit) or 1800,
+              time = tonumber(f.time), timed = f.timed == "1", date = tonumber(f.date) or (time and time()) or 0,
+              completed = true, imported = true, splits = {}, forces = {} }
+  r.remaining = r.time and (r.timeLimit - r.time)
+  local fo = tonumber(f.forces); if fo and fo > 0 then r.forces[100] = fo end
+  for piece in (f.boss or ""):gmatch("[^|]+") do
+    local id, bname, t = piece:match("^([^:]*):([^:]*):(%d+)$")
+    if t then r.splits[#r.splits + 1] = { id = tonumber(id) or bname, name = bname, t = tonumber(t) } end
+  end
+  table.sort(r.splits, function(a, b) return a.t < b.t end)
+  if #r.splits == 0 or not r.time then return nil, "no boss times in it" end
+  local list = runsFor(mapID)
+  for i = #list, 1, -1 do local x = list[i]; if x.imported and x.level == r.level and x.time == r.time then table.remove(list, i) end end
+  table.insert(list, 1, r)
+  trim(list)
+  return r
+end
+
+local shareBox
+function ns.ShareBox(text)
+  if not shareBox then
+    shareBox = CreateFrame("Frame", "SmilerSplitsShare", UIParent, "BackdropTemplate")
+    shareBox:SetSize(520, 92); shareBox:SetPoint("CENTER"); shareBox:SetFrameStrata("DIALOG")
+    if S and S.Panel then S.Panel(shareBox, "void", 0.97, 0.5) else shareBox:SetBackdrop({ bgFile = WHITE, edgeFile = WHITE, edgeSize = 1 }); shareBox:SetBackdropColor(0, 0, 0, 0.9) end
+    shareBox.t = Text(shareBox, "label", 12, "amethyst"); shareBox.t:SetPoint("TOPLEFT", 12, -10)
+    shareBox.eb = CreateFrame("EditBox", nil, shareBox); shareBox.eb:SetPoint("TOPLEFT", 12, -30); shareBox.eb:SetPoint("TOPRIGHT", -12, -30); shareBox.eb:SetHeight(24)
+    shareBox.eb:SetFontObject(ChatFontNormal); shareBox.eb:SetAutoFocus(true)
+    shareBox.eb:SetScript("OnEscapePressed", function() shareBox:Hide() end)
+    shareBox.eb:SetScript("OnEnterPressed", function(e)
+      if shareBox.mode == "import" then
+        local r, err = ns.Import(e:GetText())
+        if r then say(string.format("Imported +%d %s, %s%s.", r.level, r.name, clock(r.time), r.timed and " timed" or "")); shareBox:Hide(); refreshWindow()
+        else say("Couldn't import: " .. err) end
+      else shareBox:Hide() end
+    end)
+    shareBox.h = Text(shareBox, "body", 11, "muted"); shareBox.h:SetPoint("BOTTOMLEFT", 12, 10)
+    tinsert(UISpecialFrames, "SmilerSplitsShare")
+  end
+  if text then
+    shareBox.mode = "share"; shareBox.t:SetText("SHARE THIS RUN"); shareBox.eb:SetText(text); shareBox.h:SetText("Ctrl-C to copy · a friend pastes it with /splits import")
+    shareBox:Show(); shareBox.eb:HighlightText()
+  else
+    shareBox.mode = "import"; shareBox.t:SetText("IMPORT A RUN"); shareBox.eb:SetText(""); shareBox.h:SetText("Paste a SKSPLIT1 string and press Enter")
+    shareBox:Show()
+  end
+end
+
 ---------------------------------------------------------------- settings
 function ns.OpenSettings()
   if S and S.OpenSettings then S:OpenSettings("Splits") else
@@ -581,6 +662,8 @@ if S and S.RegisterSettings then
       note = "/splits shows or hides the window. Right-click it for options.",
       footer = {
         { "Preview", function() ns.Test() end, nil, 90 },
+        { "Share", function() SlashCmdList.SMILERSPLITS("share") end, nil, 80 },
+        { "Import", function() ns.ShareBox(nil) end, nil, 80 },
         { "Reset position", function() ns.ResetPosition() end, nil, 120 },
         { "Show window", function() showWindow() end, "primary", 120 },
       },
@@ -652,9 +735,22 @@ SlashCmdList.SMILERSPLITS = function(msg)
   elseif cmd == "reset" then ns.ResetPosition(); say("position reset")
   elseif cmd == "compare" and (arg == "closest" or arg == "best" or arg == "last") then db.compare = arg; say("comparing with: " .. arg)
   elseif cmd == "options" or cmd == "settings" then ns.OpenSettings()
+  elseif cmd == "share" then
+    local run = ns.last or (cur and not cur.test and cur)
+    if not run then
+      -- most recent recorded run anywhere
+      for _, list in pairs(db.runs) do for _, r in ipairs(list) do if not run or (r.date or 0) > (run.date or 0) then run = r end end end
+    end
+    local s = run and ns.Export(run)
+    if s then ns.ShareBox(s) else say("no run to share yet") end
+  elseif cmd == "import" then
+    if arg ~= "" then
+      local r, err = ns.Import(arg)
+      if r then say(string.format("Imported +%d %s, %s%s.", r.level, r.name, clock(r.time), r.timed and " timed" or "")); refreshWindow() else say("Couldn't import: " .. err) end
+    else ns.ShareBox(nil) end
   elseif cmd == "clear" then
     if arg == "yes" then db.runs = {}; say("all recorded runs cleared") else say("this deletes every recorded run: type /splits clear yes") end
   else
-    say("/splits  show/hide · test · lock · reset · compare closest|best|last · settings · clear")
+    say("/splits  show/hide · test · lock · reset · compare closest|best|last · share · import · settings · clear")
   end
 end

@@ -41,11 +41,12 @@ local function whoHas(id)
   local hidden = false
   for _, u in ipairs(units()) do
     if UnitExists(u) and not (u ~= "player" and UnitIsUnit(u, "player")) then
+      -- we only need to know the beacon is there; its fields can stay hidden
       local ok, aura = pcall(C_UnitAuras.GetAuraDataBySpellName, u, name, "HELPFUL|PLAYER")
       if ok and aura then
-        if isSecret(aura) or isSecret(aura.spellId) then hidden = true
-        else return UnitName(u) or u end
-      end
+        local n = UnitName(u)
+        return (n and not isSecret(n)) and n or (u == "player" and "you" or u)
+      elseif not ok then hidden = true end
     end
   end
   return hidden and "?" or nil
@@ -72,13 +73,24 @@ local function makeIcon(i, id)
   b:SetScript("OnEnter", function(s)
     GameTooltip:SetOwner(s, "ANCHOR_RIGHT")
     GameTooltip:AddLine(spellName(s.id), 1, 0.82, 0)
-    GameTooltip:AddLine(s.on == "?" and "The game is hiding auras from add-ons right now (in combat)." or (s.on and ("On " .. s.on) or "Not on anyone"), 1, 1, 1, true)
+    GameTooltip:AddLine(s.on == "?" and "The game is hiding auras from add-ons right now, and you haven't cast this beacon since logging in." or (s.on and ("On " .. s.on .. (s.remembered and " (where you last cast it; auras are hidden here)" or "")) or "Not on anyone"), 1, 1, 1, true)
     GameTooltip:AddLine(db.locked and "/beacons lock to move" or "Drag to move · /beacons lock", 0.6, 0.6, 0.6)
     GameTooltip:Show()
   end)
   b:SetScript("OnLeave", GameTooltip_Hide)
   icons[i] = b
   return b
+end
+
+-- where you last cast each beacon: the fallback when the game hides auras from add-ons (instanced combat)
+local lastCast = {}
+local function inGroupByName(name)
+  if not name then return false end
+  for _, u in ipairs(units()) do
+    local n = UnitName(u)
+    if n and not isSecret(n) and (n == name or (name:find("-", 1, true) and n == name:match("^(.-)%-"))) then return true, u end
+  end
+  return false
 end
 
 local lastState = {}
@@ -89,7 +101,15 @@ function ns.Update()
   local anyMissing = false
   for i, b in ipairs(icons) do
     local who = whoHas(b.id)
-    b.on = who
+    local remembered = false
+    if who == nil and InCombatLockdown() and IsInInstance() then who = "?" end   -- in instanced combat a blank answer may just be hidden
+    if who == "?" then
+      -- auras hidden right now: trust your last cast, as long as that person is still in the group
+      local lc = lastCast[b.id]
+      if lc and inGroupByName(lc.name) then who = lc.name; remembered = true
+      elseif lc then who = nil end          -- the person you beaconed has gone
+    end
+    b.on = who; b.remembered = remembered
     local missing = who == nil
     if missing then anyMissing = true end
     b:SetSize(db.size, db.size)
@@ -97,7 +117,7 @@ function ns.Update()
     b.tex:SetDesaturated(missing)
     b.warn:SetShown(missing)
     b:SetBackdropBorderColor(RGB(missing and "ruby" or (who == "?" and "edge" or "emerald"), 1))
-    b.who:SetText(missing and "|cffff2d55missing|r" or (who == "?" and "?" or who))
+    b.who:SetText(missing and "|cffff2d55missing|r" or (who == "?" and "?" or ((remembered and "~" or "") .. who)))
     -- alert once when a beacon drops off (not on login / when it was never up)
     if missing and lastState[b.id] and lastState[b.id] ~= "?" then
       if db.alert and S and S.Toast then
@@ -154,7 +174,8 @@ end
 local ev = CreateFrame("Frame")
 for _, e in ipairs({ "ADDON_LOADED", "PLAYER_ENTERING_WORLD", "GROUP_ROSTER_UPDATE", "PLAYER_TALENT_UPDATE", "TRAIT_CONFIG_UPDATED",
                      "PLAYER_SPECIALIZATION_CHANGED", "SPELLS_CHANGED", "UNIT_AURA", "PLAYER_REGEN_ENABLED" }) do ev:RegisterEvent(e) end
-ev:SetScript("OnEvent", function(_, e, a1)
+if ev.RegisterUnitEvent then ev:RegisterUnitEvent("UNIT_SPELLCAST_SENT", "player") else ev:RegisterEvent("UNIT_SPELLCAST_SENT") end
+ev:SetScript("OnEvent", function(_, e, a1, a2, a3, a4)
   if e == "ADDON_LOADED" then
     if a1 ~= ADDON then return end
     SmilerBeaconsDB = SmilerBeaconsDB or {}
@@ -165,6 +186,14 @@ ev:SetScript("OnEvent", function(_, e, a1)
     return
   end
   if not db then return end
+  if e == "UNIT_SPELLCAST_SENT" then
+    -- a1 = unit, a2 = target name, a4 = spell ID (the name may be hidden in combat: then we can't remember it)
+    if a1 == "player" and (a4 == LIGHT or a4 == FAITH) and type(a2) == "string" and not isSecret(a2) and a2 ~= "" then
+      lastCast[a4] = { name = a2, t = GetTime() }
+      local other = a4 == LIGHT and FAITH or LIGHT          -- one person carries one of your beacons: the other moves off them
+      if lastCast[other] and lastCast[other].name == a2 then lastCast[other] = nil end
+    end
+  end
   ns.Update()
 end)
 
