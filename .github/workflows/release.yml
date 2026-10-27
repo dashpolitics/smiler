@@ -28,7 +28,11 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "v$ver" -m "Smiler v$ver"
           git push origin "v$ver"
-          echo "release=yes" >> "$GITHUB_OUTPUT"
+          # build from the tag itself, so the packager sees a proper release (not a branch alpha)
+          gh workflow run release.yml --ref "v$ver"
+          echo "release=dispatched" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Package and upload
         if: steps.tag.outputs.release == 'yes'
         uses: BigWigsMods/packager@v2

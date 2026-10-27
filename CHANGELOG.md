@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.1.1 – 2026-10-27
+## 1.1.2 – 2026-10-27
 
 - **SmilerSplits 0.2.0**: `/splits share` and `/splits import` – pass a run's boss splits to a friend as a string; imported runs match by boss name too.
 - **SmilerBeacons 0.2.1**: works in instanced combat: counts a beacon as present even when the game hides its details, and otherwise falls back to where you last cast it (`~Name`) instead of a false "missing".

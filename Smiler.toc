@@ -2,7 +2,7 @@
 ## Title: |cffb66effSmiler|r
 ## Notes: The shared look, settings window, menu and alerts for SmilerKeys, CD Timeline, RampNotes, DiedTo, Rewound and LustReady. /smiler
 ## Author: Tom Miller
-## Version: 1.1.1
+## Version: 1.1.2
 ## X-Wago-ID: 56nb8a69
 ## X-License: MIT
 ## Category: Dungeons & Raids
