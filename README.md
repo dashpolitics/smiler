@@ -6,10 +6,10 @@ A pack of World of Warcraft add-ons for Midnight, sharing one look (Crystal Ball
 |---|---|---|
 | **Smiler** | The shared settings window, menu button and alerts. Everything else works without it, with slash commands only. | `/smiler` |
 | **SmilerKeys** | Your friends' best timed keys, keystones and Resilient levels in one grid; a wishlist for every gear slot beside your character sheet; a gear guide, QE Live import, embellishment planning and a week-by-week "where to go" planner for bonus rolls and kills. | `/sk`, `/sk loot`, `/sk plan` |
-| **CD Timeline** | Boss mechanics and healer cooldowns sliding towards a now line, a fight graph, and a planner with built-in Heroic and Mythic damage profiles for every boss of the tier. | `/tl`, `/tl plan` |
+| **CD Timeline** | Boss mechanics and healer cooldowns sliding towards a now line, a fight graph, and a planner with built-in Heroic and Mythic damage profiles for every boss of the tier. On-use trinkets are planned like any other cooldown, and a compact row you drag over your cooldown icons shows when to press each one. | `/tl`, `/tl plan`, `/tl cdm` |
 | **Smiler_Fights** | The damage profiles CD Timeline loads on demand. | – |
 | **RampNotes** | Plain on-screen notes with draggable spell rows for ramps and rotations. | `/rn` |
-| **DiedTo** | What killed each group member and the hits leading up to it, with avoidable damage and interruptible casts marked. | `/diedto` |
+| **DiedTo** | What killed each group member and the hits leading up to it, with avoidable damage and interruptible casts marked, plus an end-of-fight summary giving each death a probable cause. | `/diedto` |
 | **Rewound** | Preservation Evoker: records your Rewinds and announces a new best. Boss bests: your best HPS on every raid boss, per character and difficulty. | `/rewound`, `/rewoundx` |
 | **LustReady** | Tells you lust is up when a boss is pulled, and when Exhaustion wears off. | `/lust` |
 | **SmilerSplits** | Mythic+ boss splits against your run nearest this key level, and whether you're on pace to time it. | `/splits` |
