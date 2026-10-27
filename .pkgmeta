@@ -21,3 +21,5 @@ move-folders:
   Smiler/SmilerSplits: SmilerSplits
   Smiler/SmilerPet: SmilerPet
   Smiler/SmilerBeacons: SmilerBeacons
+  Smiler/SmilerStash: SmilerStash
+  Smiler/SmilerVault: SmilerVault

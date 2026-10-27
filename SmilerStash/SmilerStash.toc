@@ -1,0 +1,11 @@
+## Interface: 120105, 120100
+## Title: |cffb66effSmilerStash|r
+## Notes: Your loot currencies (Venomstones, keys and shards, catalyst, sparks, bonus rolls, crests, soul fragments), upgrade heads-ups, and where this week's Venomstones can still come from, for all your characters. /stash
+## Author: Tom Miller
+## Version: 0.1.0
+## SavedVariables: SmilerStashDB
+## IconTexture: Interface\Icons\INV_Misc_Gem_Variety_02
+## OptionalDeps: Smiler
+
+Venom.lua
+Stash.lua

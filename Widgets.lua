@@ -297,13 +297,21 @@ end
 -- a row: label (and hint) on the left, control on the right
 function Col:Row(label, hint, control, h)
   h = h or (hint and 42 or 34)
+  -- text stops short of the control and wraps, so long hints never run under it
+  local cw = control and control.GetWidth and control:GetWidth() or 0
+  if not cw or cw <= 0 then cw = 44 end
+  local tw = math.max(80, self.w - cw - 14)
   local l = S.Text(self.parent, "body", 14, "text")
   l:SetPoint("TOPLEFT", self.x, self.y - (hint and 6 or (h - 14) / 2))
+  l:SetWidth(tw)
   l:SetText(label)
   if hint then
     local hn = S.Text(self.parent, "body", 12, "muted")
     hn:SetPoint("TOPLEFT", l, "BOTTOMLEFT", 0, -3)
+    hn:SetWidth(tw); hn:SetWordWrap(true)
     hn:SetText(hint)
+    local need = 6 + 16 + 3 + math.ceil(hn:GetStringHeight() or 14) + 6
+    if need > h then h = need end
   end
   if control then
     control:SetPoint("RIGHT", self.parent, "TOPLEFT", self.x + self.w, self.y - h / 2)

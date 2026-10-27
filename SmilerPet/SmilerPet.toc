@@ -2,7 +2,7 @@
 ## Title: |cffb98cffSmilerPet|r
 ## Notes: A small movable icon for your pet's ability cooldowns (e.g. Felhunter Devour Magic). /petcd
 ## Author: Tom Miller
-## Version: 0.1.1
+## Version: 0.1.2
 ## SavedVariables: SmilerPetDB
 ## IconTexture: Interface\Icons\Spell_Nature_Purge
 ## OptionalDeps: Smiler

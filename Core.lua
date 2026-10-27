@@ -3,7 +3,7 @@
 local ADDON, S = ...
 Smiler = S
 
-S.VERSION = "1.1.2"
+S.VERSION = "1.2.0"
 
 ---------------------------------------------------------------- Crystal Ball palette
 -- One meaning per gem colour, and each one always comes with a shape or a word.
@@ -143,6 +143,10 @@ S.MODULES = {
     desc = "Records your Preservation Evoker Rewinds and announces a new best.",
     menu = "Rewound records", open = function() S:OpenSettings("Rewound") end,
     needs = "Preservation Evoker", fits = function() return S.Spec() == 1468 end },
+  { key = "RewoundExtra", addon = "Rewound", partOf = "Rewound", title = "Boss bests", slash = "/rewoundx",
+    desc = "Your best HPS on every raid boss, per character and difficulty, next to your alts'.",
+    menu = "Boss bests (HPS)", open = slash("REWOUNDX", ""),
+    needs = "a healer spec", fits = function() return S.Role() == "HEALER" end },
   { key = "Splits", addon = "SmilerSplits", title = "SmilerSplits", slash = "/splits",
     desc = "Mythic+ boss splits against your run nearest this key level, and whether you're on pace to time it.",
     menu = "M+ splits", open = slash("SMILERSPLITS", "") },
@@ -155,6 +159,12 @@ S.MODULES = {
     desc = "Holy Paladin: warns when Beacon of Light or Faith isn't on anyone in your group.",
     open = function() S:OpenSettings("Beacons") end,
     needs = "Holy Paladin with the Beacon of Faith talent", fits = function() return S.Class() == "PALADIN" end },
+  { key = "Stash", addon = "SmilerStash", title = "SmilerStash", slash = "/stash",
+    desc = "Your loot currencies in one place, a heads-up when you can upgrade, and where this week's Venomstones can still come from.",
+    menu = "Stash & Venomstones", open = slash("SMILERSTASH", "") },
+  { key = "Vault", addon = "SmilerVault", title = "SmilerVault", slash = "/vault",
+    desc = "Great Vault progress across your characters, with a Tuesday warning when someone is under 3 slots.",
+    menu = "Vault (all characters)", open = slash("SMILERVAULT", "") },
   { key = "LustReady", addon = "LustReady", title = "LustReady", slash = "/lust",
     desc = "Tells you lust is up when a boss is pulled, and when Exhaustion wears off." },
 }
@@ -256,3 +266,57 @@ SlashCmdList.SMILER = function(msg)
     if m then S:OpenSettings(m.key) else S.Print("/smiler · /smiler menu · /smiler move · /smiler test") end
   end
 end
+
+---------------------------------------------------------------- tidy the Blizzard UI (General tab)
+-- Hide the raid manager (the tab on the left edge) and/or the objective tracker. Both hold secure buttons,
+-- so they're only hidden out of combat; in combat they're made invisible and hidden properly once it ends.
+S.Tidy = {}
+local Tidy = S.Tidy
+local function inInstance()
+  local _, t = IsInInstance()
+  return t == "raid" or t == "party" or t == "scenario" or t == "delve"
+end
+function Tidy.WantManager() return S.db and S.db.hideRaidManager end
+function Tidy.WantTracker()
+  local m = S.db and S.db.hideTracker
+  return m == "always" or (m == "instance" and inInstance())
+end
+local hooked = {}
+local function apply(frame, want, showBack)
+  if not frame then return end
+  if want then
+    frame:SetAlpha(0)
+    if InCombatLockdown() then Tidy.pending = true else frame:Hide() end
+  else
+    frame:SetAlpha(1)
+    if showBack and not InCombatLockdown() then showBack(frame) end
+  end
+end
+function Tidy.Apply()
+  if not S.db then return end
+  local mgr, trk = CompactRaidFrameManager, ObjectiveTrackerFrame
+  if mgr and not hooked.mgr then
+    hooked.mgr = true
+    hooksecurefunc(mgr, "Show", function(f) if Tidy.WantManager() then apply(f, true) end end)
+  end
+  if trk and not hooked.trk then
+    hooked.trk = true
+    hooksecurefunc(trk, "Show", function(f) if Tidy.WantTracker() then apply(f, true) end end)
+  end
+  apply(mgr, Tidy.WantManager(), function(f) if IsInGroup() then f:Show() end end)
+  apply(trk, Tidy.WantTracker(), function(f) f:Show() end)
+end
+local tidyEv = CreateFrame("Frame")
+for _, e in ipairs({ "PLAYER_ENTERING_WORLD", "ZONE_CHANGED_NEW_AREA", "GROUP_ROSTER_UPDATE", "PLAYER_REGEN_ENABLED" }) do tidyEv:RegisterEvent(e) end
+tidyEv:SetScript("OnEvent", function(_, e)
+  if e == "PLAYER_REGEN_ENABLED" and not Tidy.pending then return end
+  Tidy.pending = nil
+  if not (S.db and (S.db.hideRaidManager or (S.db.hideTracker and S.db.hideTracker ~= "show"))) and not Tidy.touched then return end
+  Tidy.Apply()
+end)
+function Tidy.Set(key, v)
+  S.db[key] = v
+  Tidy.touched = true
+  Tidy.Apply()
+end
+

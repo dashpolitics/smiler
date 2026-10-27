@@ -4360,7 +4360,7 @@ end)
 -- header icons to add a cast. Right-click: unlink / relink. Shift+right-click: delete. < > flips between bosses.
 ------------------------------------------------------------------------
 local PL = { icons = {}, texs = {}, fss = {}, lines = {}, pal = {}, marks = {},
-    TIME_W = 38, DMG_W = 150, EV_W = 168, COL_ROW = 26, HEAD_H = 46, TOP = 132, SIDE_W = 270, PORT_W = 64, PORT_H = 32,
+    TIME_W = 38, DMG_W = 150, EV_W = 168, COL_ROW = 26, HEAD_H = 46, TOP = 148, SIDE_W = 270, PORT_W = 64, PORT_H = 52,
     HELP = "Drag a cooldown up/down to move it - it snaps to the nearest big hit (hold Shift: free). Drag an icon from a column header to add a cast. Right-click: unlink · Shift+right-click: delete." }
 PL.DMG_X = PL.TIME_W
 -- one colour per cooldown, so its effect block and cooldown rail read at a glance
@@ -4766,7 +4766,7 @@ function PL.Draw()
     end
     local W = x
     pf:SetSize(W, PH)
-    if not PL.barW then PL.TierBosses(); PL.barW = #(PL.tier or {}) * (PL.PORT_W + 4) + 3 * 8 + 80 end
+    if not PL.barW then PL.TierBosses(); PL.barW = #(PL.tier or {}) * (PL.PORT_W + 4) + 3 * 8 + 150 end
     f:SetSize(math.max(560, W + 28, PL.barW + 28), PL.TOP + PL.HEAD_H + PH + 18 + 66)
     f.hint:SetWidth(math.max(560, W + 28) - 28)
 
@@ -5144,7 +5144,15 @@ function PL.BuildBossBar(f)
     bar_.btns, bar_.tags = {}, {}
     f.bossBar = bar_
     local function diffBtn(label, d)
-        local b = FlatButton(bar_, label, 30, 20); b.d = d
+        local b = FlatButton(bar_, label, label == "LFR" and 36 or 30, 20); b.d = d
+        b:HookScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_BOTTOM"); GameTooltip:SetText(DIFF_NAME[d] or label, 1, 1, 1)
+            local cur = f.note
+            local has = cur and DB.notes[cur.encounterID] and DB.notes[cur.encounterID][d]
+            GameTooltip:AddLine(has and "You have a plan for this boss on this difficulty" or "No plan of yours for this boss on this difficulty (preview or import one)", 0.8, 0.8, 0.8, true)
+            GameTooltip:Show()
+        end)
+        b:HookScript("OnLeave", function() GameTooltip:Hide() end)
         b:SetScript("OnClick", function() PL.diff = d
             local cur = f.note
             if cur and cur.encounterID then
@@ -5154,8 +5162,9 @@ function PL.BuildBossBar(f)
         end)
         return b
     end
-    bar_.h = diffBtn("H", 15); bar_.m = diffBtn("M", 16)
+    bar_.lfr = diffBtn("LFR", 17); bar_.n = diffBtn("N", 14); bar_.h = diffBtn("H", 15); bar_.m = diffBtn("M", 16)
     bar_.m:SetPoint("TOPRIGHT", bar_, "TOPRIGHT", 0, -12); bar_.h:SetPoint("RIGHT", bar_.m, "LEFT", -3, 0)
+    bar_.n:SetPoint("RIGHT", bar_.h, "LEFT", -3, 0); bar_.lfr:SetPoint("RIGHT", bar_.n, "LEFT", -3, 0)
 end
 
 function PL.SyncBossBar()
@@ -5181,17 +5190,19 @@ function PL.SyncBossBar()
             btn = CreateFrame("Button", nil, bar_, "BackdropTemplate")
             btn:SetSize(PL.PORT_W, PL.PORT_H)
             btn:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8", edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 })
-            btn.tex = btn:CreateTexture(nil, "ARTWORK"); btn.tex:SetPoint("TOPLEFT", 1, -1); btn.tex:SetPoint("BOTTOMRIGHT", -1, 1)
+            btn.tex = btn:CreateTexture(nil, "ARTWORK"); btn.tex:SetPoint("TOPLEFT", 1, -1); btn.tex:SetSize(PL.PORT_W - 2, (PL.PORT_W - 2) / 2)
             btn.tex:SetTexCoord(0, 1, 0, 1)        -- the journal's boss portraits are 2:1 (128x64): shown whole, not squashed
-            btn.n = btn:CreateFontString(nil, "OVERLAY"); ApplyFont(btn.n, 11, "OUTLINE"); btn.n:SetPoint("BOTTOMRIGHT", -2, 2)
-            btn.dot = btn:CreateTexture(nil, "OVERLAY"); btn.dot:SetSize(6, 6); btn.dot:SetPoint("TOPRIGHT", -2, -2)
+            btn.n = btn:CreateFontString(nil, "OVERLAY"); ApplyFont(btn.n, 11, "OUTLINE"); btn.n:SetPoint("TOPRIGHT", -3, -3)
+            btn.dot = btn:CreateTexture(nil, "OVERLAY"); btn.dot:SetSize(6, 6); btn.dot:SetPoint("TOPLEFT", 3, -3)
+            -- status word under the portrait, like the loot planner's tiles (text, not colour alone)
+            btn.t = btn:CreateFontString(nil, "OVERLAY"); ApplyFont(btn.t, 10); btn.t:SetPoint("BOTTOM", 0, 4); btn.t:SetWidth(PL.PORT_W - 2); btn.t:SetJustifyH("CENTER")
             btn:SetScript("OnClick", function(self) PL.OpenBoss(self.b) end)
             btn:SetScript("OnEnter", function(self)
                 local bb = self.b
                 GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
                 GameTooltip:AddLine(bb.name); GameTooltip:AddLine(bb.inst .. "  ·  boss " .. bb.idx, 0.8, 0.8, 0.8)
                 local mine = DB.notes[bb.enc]
-                if mine then GameTooltip:AddLine("You have a plan (dot)", 0.4, 0.9, 0.5)
+                if mine then GameTooltip:AddLine("You have a plan (MY PLAN)", 0.4, 0.9, 0.5)
                 elseif SmilerFights and SmilerFights[bb.enc] then GameTooltip:AddLine("Built-in damage profile: click to preview and add your cooldowns", 0.6, 0.8, 1, true)
                 else GameTooltip:AddLine("No data yet", 0.6, 0.6, 0.6) end
                 GameTooltip:Show()
@@ -5208,17 +5219,25 @@ function PL.SyncBossBar()
         btn:SetBackdropColor(0, 0, 0, 0.6); btn:SetBackdropBorderColor(cc[1], cc[2], cc[3], sel and 1 or 0.5)
         local mine = DB.notes[b.enc]
         btn.dot:SetShown(mine ~= nil); btn.dot:SetColorTexture(0.0, 0.9, 0.46, 1)
-        btn.tex:SetDesaturated(not mine and not (SmilerFights and SmilerFights[b.enc]))
+        local prof = SmilerFights and SmilerFights[b.enc]
+        btn.tex:SetDesaturated(not mine and not prof); btn.tex:SetAlpha((mine or prof) and 1 or 0.5)
+        if mine then btn.t:SetText("MY PLAN"); btn.t:SetTextColor(0.0, 0.9, 0.46)
+        elseif prof then btn.t:SetText("preview"); btn.t:SetTextColor(0.6, 0.8, 1)
+        else btn.t:SetText("no data"); btn.t:SetTextColor(0.55, 0.55, 0.55) end
         btn:Show()
         x = x + PL.PORT_W + 4
     end
-    PL.barW = x + 80
+    PL.barW = x + 150
     for i = #list + 1, #bar_.btns do bar_.btns[i]:Hide() end
     local d = PL.diff or (f.note and f.note.difficultyID) or 15
-    for _, b in ipairs({ bar_.h, bar_.m }) do
+    local curEnc = f.note and f.note.encounterID
+    for _, b in ipairs({ bar_.lfr, bar_.n, bar_.h, bar_.m }) do
         local on = b.d == d
         local cc = on and T.goldHi or T.border
         if b.SetBackdropBorderColor then b:SetBackdropBorderColor(cc[1], cc[2], cc[3], 1) end
+        -- dimmed when neither a plan of yours nor a built-in profile exists for this boss on that difficulty
+        local has = curEnc and ((DB.notes[curEnc] and DB.notes[curEnc][b.d]) or (SmilerFights and SmilerFights[curEnc] and SmilerFights[curEnc][b.d]))
+        if b.fs then b.fs:SetAlpha((has or on) and 1 or 0.45) end
     end
 end
 

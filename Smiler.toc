@@ -1,8 +1,8 @@
 ## Interface: 120105, 120100, 120007
 ## Title: |cffb66effSmiler|r
-## Notes: The shared look, settings window, menu and alerts for SmilerKeys, CD Timeline, RampNotes, DiedTo, Rewound and LustReady. /smiler
+## Notes: The shared look, settings window, menu and alerts for the Smiler add-ons (SmilerKeys, CD Timeline, DiedTo, Stash, Vault and more). /smiler
 ## Author: Tom Miller
-## Version: 1.1.2
+## Version: 1.2.0
 ## X-Wago-ID: 56nb8a69
 ## X-License: MIT
 ## Category: Dungeons & Raids

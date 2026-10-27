@@ -3,6 +3,9 @@ local _, S = ...
 local W = S.W
 
 local WIN_W, WIN_H, NAV_W = 880, 580, 200
+-- tall enough for every tab in the list plus the note at the bottom of the nav (grows as add-ons join the pack)
+local TAB_STEP = 30
+WIN_H = math.max(WIN_H, 46 + 12 + 2 * TAB_STEP + 12 + #S.MODULES * TAB_STEP + 64)
 local win, main, current
 local tabs, pages = {}, {}
 
@@ -77,6 +80,22 @@ local function buildGeneral(body)
   return { footer = { { "Test alerts", function() S:TestToasts() end, "primary", 110 } } }
 end
 
+---------------------------------------------------------------- Blizzard UI tab: hide bits of the default interface
+local function buildBlizz(body)
+  local col = W.Column(body, 0, 0, 420)
+  col:Section("Raid manager")
+  col:Switch("Hide the raid manager", "The tab on the left edge: markers, ready check, raid frame options", function() return S.db.hideRaidManager end,
+    function(v) S.Tidy.Set("hideRaidManager", v) end)
+  col:Gap(6)
+  col:Section("Objective tracker")
+  col:Dropdown("Quests and objectives", { { "show", "Show" }, { "instance", "Hide in instances" }, { "always", "Always hide" } },
+    function() return S.db.hideTracker or "show" end, function(k) S.Tidy.Set("hideTracker", k) end, 160)
+  col:Gap(6)
+  col:Note("Both hold buttons Blizzard protects in combat, so if you change this during a fight they turn invisible straight away and are fully hidden as soon as combat ends. Turning an option off brings the frame back.", "muted", 12)
+  col:Note("/readycheck and your raid marker keybinds still work while the raid manager is hidden.", "muted", 12)
+  return { note = "Changes save as you make them and apply straight away." }
+end
+
 ---------------------------------------------------------------- module tab without its own builder
 local function buildDefault(body, m)
   local col = W.Column(body, 0, 0, 600)
@@ -101,12 +120,12 @@ local function buildPage(key)
 
   local title = S.Text(page, "display", 28, "text")
   title:SetPoint("TOPLEFT", 28, -20)
-  title:SetText(m and m.title or "Smiler")
+  title:SetText(m and m.title or (key == "BlizzUI" and "Blizzard UI") or "Smiler")
   local desc = S.Text(page, "body", 13, "soft")
   desc:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
   desc:SetPoint("RIGHT", page, "RIGHT", -200, 0)
   desc:SetWordWrap(true); desc:SetMaxLines(2)
-  desc:SetText(m and m.desc or "One look, one settings window and one place for alerts, shared by all your add-ons.")
+  desc:SetText(m and m.desc or (key == "BlizzUI" and "Hide parts of the default interface you don't use.") or "One look, one settings window and one place for alerts, shared by all your add-ons.")
   -- who it's for, when it isn't everyone
   if m and m.needs then
     local fits = S.Fits(m)
@@ -143,7 +162,9 @@ local function buildPage(key)
   body.smilerSync = page.smilerSync
 
   local result
-  if not m then
+  if key == "BlizzUI" then
+    result = buildBlizz(body)
+  elseif not m then
     result = buildGeneral(body)
   elseif m.partOf and not loaded then
     W.Column(body, 0, 0, 600):Note("Part of " .. m.partOf .. ", which is turned off. Turn it on in its tab, then reload.", "muted")
@@ -206,7 +227,7 @@ end
 local function makeTab(nav, key, label, m, y)
   local t = CreateFrame("Button", nil, nav)
   t.key, t.m = key, m
-  t:SetHeight(34)
+  t:SetHeight(TAB_STEP - 2)
   t:SetPoint("TOPLEFT", 0, y); t:SetPoint("TOPRIGHT", 0, y)
   t.bg = t:CreateTexture(nil, "BACKGROUND"); t.bg:SetAllPoints()
   t.hover = t:CreateTexture(nil, "BACKGROUND", nil, 1); t.hover:SetAllPoints(); t.hover:SetColorTexture(S.RGB("raised")); t.hover:Hide()
@@ -218,7 +239,7 @@ local function makeTab(nav, key, label, m, y)
     t.dot:SetPoint("LEFT", 14, 0)
     x = 30
   end
-  t.text = S.Text(t, "body", 14, "soft")
+  t.text = S.Text(t, "body", 13, "soft")
   t.text:SetPoint("LEFT", x, 0)
   t.text:SetText(label)
   t:SetScript("OnEnter", function(s) if s.key ~= current then s.hover:Show() end end)
@@ -230,7 +251,8 @@ end
 
 local function build()
   win = CreateFrame("Frame", "SmilerSettings", UIParent, "BackdropTemplate")
-  win:SetSize(WIN_W, WIN_H)
+  local maxH = (UIParent:GetHeight() or 768) - 40
+  win:SetSize(WIN_W, math.min(WIN_H, math.max(580, maxH)))
   win:SetPoint("CENTER")
   win:SetFrameStrata("DIALOG")
   win:SetToplevel(true)
@@ -269,10 +291,11 @@ local function build()
   local navEdge = nav:CreateTexture(nil, "ARTWORK"); navEdge:SetColorTexture(S.RGB("edge", 0.38))
   navEdge:SetWidth(1); navEdge:SetPoint("TOPRIGHT"); navEdge:SetPoint("BOTTOMRIGHT")
   local y = -12
-  makeTab(nav, "General", "General", nil, y); y = y - 36
+  makeTab(nav, "General", "General", nil, y); y = y - TAB_STEP
+  makeTab(nav, "BlizzUI", "Blizzard UI", nil, y); y = y - TAB_STEP
   local sep = nav:CreateTexture(nil, "ARTWORK"); sep:SetColorTexture(S.RGB("edge", 0.25)); sep:SetHeight(1)
   sep:SetPoint("TOPLEFT", 14, y - 4); sep:SetPoint("TOPRIGHT", -14, y - 4); y = y - 12
-  for _, m in ipairs(S.MODULES) do makeTab(nav, m.key, m.title, m, y); y = y - 36 end
+  for _, m in ipairs(S.MODULES) do makeTab(nav, m.key, m.title, m, y); y = y - TAB_STEP end
 
   local navNote = S.Text(nav, "body", 12, "muted")
   navNote:SetWordWrap(true); navNote:SetWidth(NAV_W - 28)
@@ -304,7 +327,7 @@ function S:OpenSettings(key)
   if not win then build() end
   if not key and win:IsShown() then win:Hide(); return end
   key = key or (S.db and S.db.tab) or "General"
-  if key ~= "General" and not S.byKey[key] then key = "General" end
+  if key ~= "General" and key ~= "BlizzUI" and not S.byKey[key] then key = "General" end
   select_(key)
   win:Show()
   win:Raise()

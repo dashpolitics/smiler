@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.0 – 2026-10-27
+
+- **New: SmilerStash 0.1.0** – loot currencies for all your characters, upgrade heads-ups, this week's Venomstone sources. `/stash`
+- **New: SmilerVault 0.1.0** – Great Vault progress across characters with a Tuesday warning. `/vault`
+- **Rewound 0.4.0** – Boss bests: best HPS per raid boss, character and difficulty. `/rewoundx`
+- **Smiler 1.2.0** – Blizzard UI tab (hide the raid manager and the objective tracker); settings window grows with the pack; hints wrap instead of running under controls.
+- **CD Timeline 0.30.4** – boss bar: LFR/N/H/M switches with tooltips, bigger portraits with a status word under each.
+- **SmilerPet 0.1.2** – remembers the pet's spells when the game hides its spellbook (combat, keys); cooldown sweep from the game's duration object when the numbers are hidden.
+
 ## 1.1.2 – 2026-10-27
 
 - **SmilerSplits 0.2.0**: `/splits share` and `/splits import` – pass a run's boss splits to a friend as a string; imported runs match by boss name too.

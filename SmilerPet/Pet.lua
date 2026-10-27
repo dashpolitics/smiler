@@ -34,14 +34,30 @@ local function petSlot(id)
   local n = C_SpellBook.HasPetSpells()
   if not plain(n) or not n then return nil end
   local want = spellName(id)
+  local readable = false
   for i = 1, n do
     local ok, info = pcall(C_SpellBook.GetSpellBookItemInfo, i, PET_BANK)
     if ok and info then
       local sid = info.spellID or info.actionID
+      if plain(sid) or plain(info.name) then readable = true end
       if (plain(sid) and sid == id) or (plain(info.name) and info.name == want) then return i, sid end
     end
   end
+  return nil, nil, readable          -- readable: we saw the pet's real spell list, and it isn't there
 end
+
+-- The pet's spellbook is hidden from add-ons in combat and inside Mythic+ keys. Remember what the pet had the
+-- last time we could read it, and keep trusting that while a pet is out.
+local known = {}            -- [spellID] = slot
+local function petOut() local ok, v = pcall(UnitExists, "pet"); return ok and plain(v) and v or (ok and not plain(v)) end
+local function lookup(id)
+  local slot, _, readable = petSlot(id)
+  if slot then known[id] = slot; return slot end
+  if readable then known[id] = nil; return nil end   -- we could read it: the pet really lacks it
+  if known[id] and petOut() then return known[id] end
+  return nil
+end
+function ns.Forget() wipe(known) end
 
 -- start, duration, modRate (may be secret in combat: they only go to the cooldown widget)
 local function cooldown(id, slot)
@@ -113,7 +129,7 @@ function ns.Update()
     b.spell = id
     b:SetSize(db.size, db.size)
     b.tex:SetTexture(spellIcon(id))
-    local slot = petSlot(id)
+    local slot = lookup(id)
     local has = slot ~= nil
     local placeholder = not has and not db.locked       -- unlocked: always show so you can place it
     b:SetShown(has or placeholder or not db.hideNoPet)
@@ -121,7 +137,20 @@ function ns.Update()
     if has then
       local start, dur, rate = cooldown(id, slot)
       local onCD = false
-      if start and dur then
+      -- Midnight: a duration object draws the sweep and countdown even when the numbers are secret
+      local dobj
+      if C_Spell and C_Spell.GetSpellCooldownDuration and b.cd.SetCooldownFromDurationObject then
+        local ok, d = pcall(C_Spell.GetSpellCooldownDuration, id); if ok then dobj = d end
+      end
+      local gcd = false
+      if C_Spell and C_Spell.GetSpellCooldown then
+        local ok, cdi = pcall(C_Spell.GetSpellCooldown, id)
+        if ok and cdi and plain(cdi.isOnGCD) and cdi.isOnGCD then gcd = true end
+      end
+      if start and dur and not (plain(start) and plain(dur)) and dobj then
+        if gcd then b.cd:Clear() else pcall(b.cd.SetCooldownFromDurationObject, b.cd, dobj) end
+        onCD = nil
+      elseif start and dur then
         if plain(start) and plain(dur) then
           onCD = dur > 1.5 and start > 0                -- ignore the pet's global cooldown
           if onCD then b.cd:SetCooldown(start, dur, plain(rate) and rate or 1) else b.cd:Clear() end
@@ -132,6 +161,7 @@ function ns.Update()
       else
         b.cd:Clear()
       end
+      if onCD == nil then onCD = (not gcd) and b.cd:IsShown() and true or false end   -- numbers hidden: go by the sweep
       b.tex:SetDesaturated(db.desat and onCD == true)
       b.tex:SetAlpha(1)
       if db.border then
@@ -155,6 +185,7 @@ local function build()
   holder:SetMovable(true)
   holder:SetClampedToScreen(true)
   holder:SetFrameStrata("MEDIUM")
+  holder:Hide()                     -- shown by Update once there is something to show
   if db.point then holder:SetPoint(db.point[1], UIParent, db.point[2], db.point[3], db.point[4])
   else holder:SetPoint("CENTER", UIParent, "CENTER", 0, -160) end
 end
@@ -237,6 +268,7 @@ ev:SetScript("OnEvent", function(_, e, a1)
   end
   if not db then return end
   if e == "UNIT_PET" and a1 ~= "player" then return end
+  if e == "UNIT_PET" and not InCombatLockdown() then ns.Forget() end      -- a different pet: learn its spells again
   ns.Update()
   if e == "UNIT_PET" or e == "PLAYER_ENTERING_WORLD" or e == "SPELLS_CHANGED" then
     C_Timer.After(1, ns.Update)               -- the pet's spellbook fills in a moment after it appears

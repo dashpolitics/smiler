@@ -1,0 +1,10 @@
+## Interface: 120105, 120100
+## Title: |cffb66effSmilerVault|r
+## Notes: Great Vault progress across your characters, with a Tuesday warning for anyone under 3 slots and the quickest way there. /vault
+## Author: Tom Miller
+## Version: 0.1.0
+## SavedVariables: SmilerVaultDB
+## IconTexture: Interface\Icons\INV_Misc_TreasureChest02b
+## OptionalDeps: Smiler
+
+Vault.lua

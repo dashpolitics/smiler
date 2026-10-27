@@ -10,10 +10,12 @@ A pack of World of Warcraft add-ons for Midnight, sharing one look (Crystal Ball
 | **Smiler_Fights** | The damage profiles CD Timeline loads on demand. | – |
 | **RampNotes** | Plain on-screen notes with draggable spell rows for ramps and rotations. | `/rn` |
 | **DiedTo** | What killed each group member and the hits leading up to it, with avoidable damage and interruptible casts marked. | `/diedto` |
-| **Rewound** | Preservation Evoker: records your Rewinds and announces a new best. | `/rewound` |
+| **Rewound** | Preservation Evoker: records your Rewinds and announces a new best. Boss bests: your best HPS on every raid boss, per character and difficulty. | `/rewound`, `/rewoundx` |
 | **LustReady** | Tells you lust is up when a boss is pulled, and when Exhaustion wears off. | `/lust` |
 | **SmilerSplits** | Mythic+ boss splits against your run nearest this key level, and whether you're on pace to time it. | `/splits` |
 | **SmilerPet** | A small movable icon for a pet ability's cooldown (Felhunter Devour Magic by default). | `/petcd` |
+| **SmilerStash** | Your loot currencies in one place (Venomstones, keys and shards, catalyst, sparks, bonus rolls, crests, soul fragments) for all your characters, upgrade heads-ups, and where this week's Venomstones can still come from. | `/stash` |
+| **SmilerVault** | Great Vault progress across your characters, with a Tuesday warning for anyone under 3 slots and the quickest way there. | `/vault` |
 | **SmilerBeacons** | Holy Paladin with Beacon of Faith: warns when a beacon isn't on anyone in your group. | `/beacons` |
 
 Some modules are for one class or role (Rewound, Beacons, Pet cooldowns, CD Timeline's healing numbers). They say so on their tab and stay quiet elsewhere.
