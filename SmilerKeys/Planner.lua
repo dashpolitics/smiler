@@ -10,7 +10,10 @@ local T = ns.T
 
 ---------------------------------------------------------------- settings
 local DEFAULTS = {
-  scope = "wish", modes = { bonus = true, drop = true, vault = false, other = true },
+  scope = "wish", modes = { bonus = true, drop = true, vault = false, other = true, delve = true },
+  -- lair bosses are not part of the raid's kill order, so they are not covered by the farm count:
+  -- each one is on or off by itself. Keyed by lowercased boss name; false means not on farm yet.
+  lairFarm = {},
   farm = nil,            -- Mythic bosses on farm (nil = all)
   rollsNow = nil,        -- bonus rolls you have now (nil = read from your currency)
   rollsWeek = 2,         -- bonus rolls you get each week
@@ -19,11 +22,28 @@ local DEFAULTS = {
   weeks = 12,
 }
 function L.PlanOpts()
-  local s = ns.db.settings
-  s.planner = s.planner or {}
-  local o = s.planner
+  local cs = ns.CharSettings()
+  if not cs.planner then
+    -- First time on this character. Start from the old account-wide table so the tuning you have
+    -- already done carries over once; it is left in place, so every character starts from the same
+    -- point and then goes its own way.
+    cs.planner = {}
+    local old = ns.db.settings.planner
+    if type(old) == "table" then
+      for k, v in pairs(old) do
+        cs.planner[k] = (k == "modes" and type(v) == "table")
+          and { bonus = v.bonus, drop = v.drop, vault = v.vault, other = v.other, delve = v.delve } or v
+      end
+    end
+  end
+  local o = cs.planner
   for k, v in pairs(DEFAULTS) do
-    if o[k] == nil then o[k] = type(v) == "table" and { bonus = v.bonus, drop = v.drop, vault = v.vault, other = v.other } or v end
+    if type(v) == "table" then
+      o[k] = o[k] or {}
+      for mk, mv in pairs(v) do if o[k][mk] == nil then o[k][mk] = mv end end   -- a new mode gets its default
+    elseif o[k] == nil then
+      o[k] = v
+    end
   end
   return o
 end
@@ -36,33 +56,61 @@ local function weekID()
 end
 local function weekState()
   local s = ns.db.settings
+  local cs = ns.CharSettings()
   local id = weekID()
-  if not s.planWeek or s.planWeek.week ~= id then s.planWeek = { week = id, status = {}, rolls = {}, picks = {} } end
-  local w = s.planWeek
+  -- Lockouts and bonus rolls are per character, so the boss map is too. The old account-wide week
+  -- is handed to the first character that asks for it, if it is still this week's; the others start
+  -- clean rather than inheriting someone else's kills.
+  if not cs.planWeek and s.planWeek and s.planWeek.week == id and not s.planWeekClaimed then
+    s.planWeekClaimed = ns.selfKey or "?"
+    cs.planWeek = s.planWeek
+  end
+  if not cs.planWeek or cs.planWeek.week ~= id then cs.planWeek = { week = id, status = {}, rolls = {}, picks = {} } end
+  local w = cs.planWeek
   w.status = w.status or {}; w.rolls = w.rolls or {}; w.picks = w.picks or {}
+  if w.v ~= 2 then
+    -- Status used to be keyed by boss name alone, so marking Heroic Ula'tek killed also marked it
+    -- on LFR, Normal and Mythic: one value for all four. Keys are now "boss:difficulty". The old
+    -- ones are dropped rather than guessed at - your raid lockout fills most of it back in by
+    -- itself, and anything manual is one click to redo.
+    w.status = {}
+    w.v = 2
+  end
   return w
 end
 L.WeekState = weekState
+local function skey(name, diff) return (name or ""):lower() .. ":" .. tostring(diff or 16) end
 
 -- status of a boss this week: "rolled", "killed" or "open" (your click wins, then a recorded roll, then the lockout)
 function L.BossStatus(name, diff)
-  local key = (name or ""):lower()
+  local lname = (name or ""):lower()
   local w = weekState()
-  if w.status[key] then return w.status[key], "you" end
-  for _, r in ipairs(w.rolls) do if r.boss == key then return "rolled", "recorded" end end
+  local mine = w.status[skey(name, diff)]
+  if mine then return mine, "you" end
+  -- a recorded roll counts only on the difficulty it happened on; older records kept no difficulty,
+  -- so those still count everywhere rather than being thrown away
+  for _, r in ipairs(w.rolls) do
+    if r.boss == lname and (r.diff == nil or diff == nil or r.diff == diff) then return "rolled", "recorded" end
+  end
   L._lock = L._lock or L.KilledThisWeek()
-  if L._lock[key .. ":" .. tostring(diff or 16)] then return "killed", "lockout" end
+  if L._lock[lname .. ":" .. tostring(diff or 16)] then return "killed", "lockout" end
   return "open"
 end
+function L.SetBossStatus(name, diff, st)
+  weekState().status[skey(name, diff)] = st            -- "open" is stored, so it can beat a lockout
+end
 function L.CycleBossStatus(name, diff)
-  local key = (name or ""):lower()
   local cur = L.BossStatus(name, diff)
   local nxt = (cur == "open" and "rolled") or (cur == "rolled" and "killed") or "open"
-  weekState().status[key] = nxt
+  L.SetBossStatus(name, diff, nxt)
+  return nxt
 end
 -- kept for older callers
 function L.IsKilledThisWeek(key) local name, d = key:match("^(.-):(%d+)$"); return L.BossStatus(name or key, tonumber(d)) ~= "open" end
-function L.SetKilledThisWeek(key, v) local name = key:match("^(.-):%d+$") or key; weekState().status[name] = v and "killed" or "open" end
+function L.SetKilledThisWeek(key, v)
+  local name, d = key:match("^(.-):(%d+)$")
+  L.SetBossStatus(name or key, tonumber(d or "") or 16, v and "killed" or "open")
+end
 
 -- record bonus rolls as they happen: which boss (the last kill), what it gave, which loot spec
 local lastKill
@@ -130,6 +178,50 @@ local function tableSize(it)
   return sizeCache[key]
 end
 
+-- How many items a bonus roll there is really picking from. The checklist in /sk rolls knows what
+-- you have already had from a roll, and those items are out of the pool until the table resets -
+-- so a boss you have nearly cleared is far better odds than its loot table suggests, and a boss
+-- with one item left is a certainty. Rolling the last one resets the table, so a complete table
+-- counts as full again.
+local function rollSrc(it)
+  if it.raid then return { enc = it.enc, name = it.encName, boss = it.encName, raid = true } end
+  return { instID = it.instID, name = it.inst }
+end
+
+local function poolSize(it, diff)
+  if not (L.RollItems and L.RolledCount) then return tableSize(it) end
+  local ok, items = pcall(L.RollItems, rollSrc(it))
+  if not ok or type(items) ~= "table" or #items == 0 then return tableSize(it) end
+  local done = select(1, L.RolledCount(rollSrc(it), items, nil, diff))
+  local left = #items - (done or 0)
+  if left <= 0 then return #items, true end       -- table complete: it resets, so everything is back
+  return left, false, (done or 0) > 0
+end
+
+-- An item you already have at a good level drops out of the plan, which is right, but it used to
+-- vanish without a word - a priority-1 pick could disappear and look like a bug. This works out the
+-- best way that WOULD beat what you are wearing, and what is stopping you taking it.
+local function parkedReason(it, have, opts)
+  local m = opts.modes or {}
+  local topLv, line = nil, nil
+  for _, r in ipairs(L.Routes(it)) do
+    local top = r.max or r.ilvl or 0
+    if top > (have or 0) and (not topLv or top > topLv) then
+      local kind = (r.kind == "delve" and "delve") or (r.kind == "crafted" and "other")
+        or (r.mode == "bonus" and "bonus") or (r.mode == "vault" and "vault") or "drop"
+      topLv = top
+      if it.raid and not it.lair and r.diff == 16 and opts.farm and (it.encIndex or 0) > opts.farm then
+        line = ("only Mythic beats it · boss %d, past your farm of %d"):format(it.encIndex or 0, opts.farm)
+      elseif not m[kind] then
+        line = ("%s would, but that switch is off"):format(r.label or kind)
+      else
+        line = ("%s gives %d, up to %d with crests"):format(r.label or "?", r.ilvl or 0, top)
+      end
+    end
+  end
+  return line or "nothing this season beats it"
+end
+
 local function bossDiff(it, opts)
   if it.raid and not it.lair and opts.farm and (it.encIndex or 0) > opts.farm then return 15 end
   return 16
@@ -149,20 +241,42 @@ function L.Simulate(opts)
       local it = x.it
       local w, pct, pr = L.ItemWeight(it.id)
       local r = { it = it, w = w, pct = pct, prio = pr, bis = x.bis, p = 1, route = x.route, kind = x.kind, pw = {} }
-      -- you own it already: at the level this way gives, or on the same track or better (the rest is crests)
-      local need = x.route and (x.route.ilvl or 0) or 0
+      -- What this way is worth is where the item ENDS UP, not what it drops at: a Heroic bonus roll
+      -- lands at 318 and crests to 334, which beats the 321 you are wearing by a mile. Comparing the
+      -- drop level parked it. The route picker next door already compared the top, so the two halves
+      -- of the planner were answering the same question differently.
+      local need = x.route and (x.route.max or x.route.ilvl or 0) or 0
       local ol = own[it.id]
-      local ot = ol and L.TrackOf(ol)
-      local rt = x.route and x.route.track
-      if ol and (ol >= need or (ot and rt and L.TRACK[ot] and L.TRACK[rt] and L.TRACK[ot].order >= L.TRACK[rt].order)) then
-        r.ownedAt = own[it.id]; ownedList[#ownedList + 1] = r
+      local rolledOut = false
+      -- the difficulty of the way this item is actually coming to you. It used to be worked out
+      -- separately from the route, so a boss whose best allowed route was Heroic could be labelled,
+      -- pooled and tick-checked as Mythic (and the other way round). The route is the truth.
+      local rdiff = it.raid and ((x.route and x.route.diff) or bossDiff(it, opts)) or nil
+      if L.IsRolled and x.kind == "bonus" then
+        local d = rdiff or 15
+        local okR, got = pcall(L.IsRolled, rollSrc(it), { id = it.id, name = it.name }, nil, d)
+        rolledOut = okR and got or false
+      end
+      if rolledOut then
+        r.rolledOut = true; ownedList[#ownedList + 1] = r     -- a roll there cannot give it again yet
+      -- You have it, and this way does not give more: park it. The old rule ALSO parked anything
+      -- already on the same track, "the rest is crests" - which quietly threw away a Mythic roll at
+      -- 334 because you were wearing myth-track 321. A way that gives more item level is an upgrade
+      -- whatever track you are on; a way that gives the same or less is caught by ol >= need.
+      elseif ol and ol >= need then
+        r.ownedAt = own[it.id]
+        r.why = parkedReason(it, ol, opts)      -- so the window says what would beat it, not just that it is out
+        ownedList[#ownedList + 1] = r
       elseif x.kind == "bonus" or (x.kind == "drop" and it.raid) or (opts.modes.bonus and it.bonus and not it.crafted and not it.delve) then
-        local key = it.raid and ("r" .. (it.enc or 0)) or ("d" .. tostring(it.instID))
+        -- keyed by boss AND difficulty: Heroic Ula'tek and Mythic Ula'tek are separate lockouts and
+        -- separate roll pools, so they are separate places to go, not one card that picks a label
+        local key = it.raid and ("r" .. (it.enc or 0) .. ":" .. tostring(rdiff)) or ("d" .. tostring(it.instID))
         local s = sources[key]
         if not s then
-          local diff = it.raid and bossDiff(it, opts) or nil
+          local diff = rdiff
+          local n, reset, tracked = poolSize(it, diff or 15)
           s = { key = key, label = it.raid and (it.encName ~= "" and it.encName or g.label) or (it.inst or g.label), inst = it.inst,
-                raid = it.raid, lair = it.lair, n = tableSize(it), items = {}, diff = diff, encName = it.encName,
+                raid = it.raid, lair = it.lair, n = n, poolReset = reset, poolTracked = tracked, items = {}, diff = diff, encName = it.encName,
                 bonus = opts.modes.bonus and it.bonus, drops = opts.drops and opts.modes.drop and it.raid }
           if it.raid then s.status = L.BossStatus(it.encName, diff) end
           sources[key] = s
@@ -173,6 +287,12 @@ function L.Simulate(opts)
         sure[#sure + 1] = r         -- crafted, vault, Labyrinth, M+ runs: not a matter of luck
       end
     end
+  end
+  -- items PlanFor held back on purpose (a BiS pick with no route to its best version) join the
+  -- parked list, so the window can say why instead of simply not mentioning them
+  for _, p in ipairs(L.planParked or {}) do
+    local w, pct, pr = L.ItemWeight(p.it.id)
+    ownedList[#ownedList + 1] = { it = p.it, w = w, pct = pct, prio = pr, bis = true, p = 1, pw = {}, why = p.why, held = true }
   end
   local list = {}
   for _, s in pairs(sources) do list[#list + 1] = s end
@@ -268,12 +388,16 @@ function L.ClearPicks() weekState().picks = {} end
 
 ---------------------------------------------------------------- window
 local W, H = 1060, 720
-local MAP_Y, FLOW_Y = -78, -168
+local MAP_Y, FLOW_Y = -74, -300
 local FLOW_W, SIDE_W = 760, 250
 local CARD_W, CARD_H, CARD_GAP = 182, 78, 8
+-- the season grid: one row per difficulty, one column per boss, then a strip of the M+ dungeons
+local GRID_LBL, GRID_CW, GRID_CH, GRID_GX, GRID_GY = 56, 86, 24, 6, 3
 local win
-local cards, heads, tiles, bars = {}, {}, {}, {}
+local cards, heads, bars = {}, {}, {}
+local gridCells, dungeonTiles = {}, {}
 local state = { offset = 0 }
+ns.PlannerState = state     -- exposed so the scroll maths can be checked in tests
 
 local function refresh() if ns.Planner_Refresh then ns.Planner_Refresh() end; if ns.Paperdoll_Refresh then ns.Paperdoll_Refresh() end end
 local function fmtPct(v) return v and string.format("%+.2f%%", v) or "" end
@@ -285,6 +409,15 @@ local function itemTag(r)
   return table.concat(t, " ")
 end
 local function shortName(n) n = n or "?"; return #n > 22 and (n:sub(1, 21) .. "…") or n end
+-- grid columns are 86px, so names get the key grid's own abbreviation, then a hard trim
+local function tinyName(n, w)
+  n = n or "?"
+  local max = math.max(4, math.floor((w or 86) / 7))   -- the grid font is about 7px a character
+  if #n <= max then return n end
+  local a = ns.Abbrev and ns.Abbrev(n)
+  if a and #a > 0 and #a <= max then return a end
+  return n:sub(1, max - 1) .. "…"
+end
 
 local function toggle(parent, label, get, set, w)
   local b = T.Button(parent, label, w or 100, 24, function() set(not get()); refresh() end)
@@ -296,11 +429,15 @@ local function toggle(parent, label, get, set, w)
   return b
 end
 
-local function stepper(parent, label, x, y, get, set, fmt, tip)
-  local l = T.Text(parent, "label", 11, "muted"); l:SetPoint("TOPLEFT", x, y - 6); l:SetText(label)
+-- x may be a number (absolute) or a frame to sit after: the toggles to its left grow with their
+-- labels, so a fixed x put this row straight on top of them
+local function stepper(parent, label, x, y, get, set, fmt, tip, gap)
+  local l = T.Text(parent, "label", 11, "muted")
+  if type(x) == "table" then l:SetPoint("LEFT", x, "RIGHT", gap or 20, -6) else l:SetPoint("TOPLEFT", x, y - 6) end
+  l:SetText(label)
   local lw = math.max(60, math.ceil(l:GetStringWidth() or 60) + 8)
   local minus = T.Button(parent, "–", 22, 22, function() set(-1); refresh() end)
-  minus:SetPoint("TOPLEFT", x + lw, y)
+  if type(x) == "table" then minus:SetPoint("LEFT", l, "RIGHT", 6, 6) else minus:SetPoint("TOPLEFT", x + lw, y) end
   local v = T.Text(parent, "display", 14, "text", "CENTER"); v:SetPoint("LEFT", minus, "RIGHT", 2, 0); v:SetWidth(44)
   local plus = T.Button(parent, "+", 22, 22, function() set(1); refresh() end)
   plus:SetPoint("LEFT", v, "RIGHT", 2, 0)
@@ -310,41 +447,119 @@ local function stepper(parent, label, x, y, get, set, fmt, tip)
       f:HookScript("OnLeave", GameTooltip_Hide)
     end
   end
-  return function() v:SetText(fmt(get())) end, lw + 22 + 48 + 22
+  return function() v:SetText(fmt(get())) end, lw + 22 + 48 + 22, plus
 end
 
----------------------------------------------------------------- boss map tiles
+---------------------------------------------------------------- the season grid
+-- Four rows, one per raid difficulty, by this season's bosses. A row is told apart by its name and
+-- by the shape in each cell as well as by colour, so it reads the same without colour.
 local STATUS = {
-  open    = { icon = nil,     text = "open",   color = "soft" },
-  rolled  = { icon = "star",  text = "rolled", color = "emerald" },
-  killed  = { icon = "tick",  text = "killed", color = "muted" },
+  open    = { icon = nil,     text = "open",   color = "soft",    mark = "" },
+  rolled  = { icon = "star",  text = "rolled", color = "diamond", mark = "*" },
+  killed  = { icon = "tick",  text = "killed", color = "emerald", mark = "x" },
 }
-local function makeTile(parent, i)
+local DIFF_ROWS = {
+  { 17, "LFR",    "muted" },
+  { 14, "NORMAL", "sapphire" },
+  { 15, "HEROIC", "amethyst" },
+  { 16, "MYTHIC", "topaz" },
+}
+
+local function cellKey(r, c) return r * 100 + c end
+
+local function makeCell(parent, r, c)
   local b = CreateFrame("Button", nil, parent, "BackdropTemplate")
-  b:SetSize(64, 52)
-  T.Panel(b, "card", 0.9, 0.6)
-  b.tex = b:CreateTexture(nil, "ARTWORK"); b.tex:SetPoint("TOPLEFT", 1, -1); b.tex:SetSize(62, 31)
-  b.n = T.Text(b, "display", 11, "text", "RIGHT", "OUTLINE"); b.n:SetPoint("TOPRIGHT", -3, -3)
-  b.st = T.IconTex(b, "star", 12, "emerald"); b.st:SetPoint("TOPLEFT", 3, -3)
-  b.t = T.Text(b, "label", 10, "soft", "CENTER"); b.t:SetPoint("BOTTOM", 0, 4); b.t:SetWidth(62)
-  b.ring = CreateFrame("Frame", nil, b, "BackdropTemplate"); b.ring:SetPoint("TOPLEFT", -2, 2); b.ring:SetPoint("BOTTOMRIGHT", 2, -2)
+  b:SetSize(GRID_CW, GRID_CH)
+  b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+  T.Panel(b, "card", 0.85, 0.5)
+  b.st = T.IconTex(b, "star", 11, "emerald"); b.st:SetPoint("LEFT", 6, 0)
+  b.t = T.Text(b, "label", 10, "soft", "LEFT"); b.t:SetPoint("LEFT", 20, 0); b.t:SetWidth(GRID_CW - 40)
+  b.n = T.Text(b, "display", 10, "topaz", "RIGHT"); b.n:SetPoint("RIGHT", -5, 0)
+  b.ring = CreateFrame("Frame", nil, b, "BackdropTemplate")
+  b.ring:SetPoint("TOPLEFT", -2, 2); b.ring:SetPoint("BOTTOMRIGHT", 2, -2)
   b.ring:SetBackdrop(T.BACKDROP); b.ring:SetBackdropColor(0, 0, 0, 0); b.ring:SetBackdropBorderColor(T.RGB("amethyst", 1))
-  b:SetScript("OnClick", function(s) if s.boss then L.CycleBossStatus(s.boss.name, s.boss.diff); refresh() end end)
+  b:SetScript("OnClick", function(s, btn)
+    local x = s.cell
+    if not x or not x.available then return end
+    if btn == "RightButton" then L.SetBossStatus(x.boss.name, x.diff, "open") else L.CycleBossStatus(x.boss.name, x.diff) end
+    refresh()
+  end)
   b:SetScript("OnEnter", function(s)
-    local x = s.boss
+    local x = s.cell
     if not x then return end
-    local st, why = L.BossStatus(x.name, x.diff)
     GameTooltip:SetOwner(s, "ANCHOR_BOTTOM")
-    GameTooltip:AddLine(x.name, T.RGB("amethyst"))
-    GameTooltip:AddLine(x.inst .. "  ·  " .. (L.DIFF_NAME[x.diff] or ""), 0.8, 0.8, 0.8)
-    GameTooltip:AddLine("This week: " .. STATUS[st].text .. (why == "recorded" and " (seen by the add-on)" or (why == "lockout" and " (from your lockout)" or (why == "you" and " (set by you)" or ""))), 1, 1, 1)
-    if s.suggest then GameTooltip:AddLine("Suggested: bonus roll here this week", T.RGB("amethyst")) end
-    if x.wanted and x.wanted > 0 then GameTooltip:AddLine(x.wanted .. " item" .. (x.wanted == 1 and "" or "s") .. " you want", 1, 1, 1) end
-    GameTooltip:AddLine("Click: open > rolled > killed", T.RGB("muted"))
+    GameTooltip:AddLine(x.boss.name .. "  ·  " .. (L.DIFF_NAME[x.diff] or ""), T.RGB("amethyst"))
+    GameTooltip:AddLine(x.boss.inst or "", 0.8, 0.8, 0.8)
+    if not x.available then
+      GameTooltip:AddLine(x.why or "This boss has no loot on this difficulty.", 1, 0.6, 0.6, true)
+      GameTooltip:Show(); return
+    end
+    local st, why = L.BossStatus(x.boss.name, x.diff)
+    GameTooltip:AddLine("This week: " .. STATUS[st].text .. (why == "recorded" and " (seen by the add-on)"
+      or (why == "lockout" and " (from your lockout)" or (why == "you" and " (set by you)" or ""))), 1, 1, 1)
+    if x.blocked then GameTooltip:AddLine("Past your Mythic farm count, so the plan will not send you here.", 1, 0.75, 0.4, true) end
+    if x.suggest then GameTooltip:AddLine("Suggested: bonus roll here this week", T.RGB("amethyst")) end
+    if #(x.items or {}) > 0 then
+      GameTooltip:AddLine(" ")
+      GameTooltip:AddLine("What you want from here", T.RGB("amethyst"))
+      for i, r in ipairs(x.items) do
+        if i > 6 then GameTooltip:AddLine("   and " .. (#x.items - 6) .. " more", 0.6, 0.6, 0.6); break end
+        -- a kill and a bonus roll at the same difficulty are not the same item level, and on the
+        -- last two bosses they are a long way apart, so the cell shows both rather than one number
+        local kill = L.DropIlvl and L.DropIlvl(r.it, x.diff) or (r.it.ilvl and r.it.ilvl[x.diff])
+        local roll = r.it.bonus and L.RollIlvl and L.RollIlvl(r.it, x.diff)
+        -- and each one shows where it ends up after crests, because that is what decides whether it
+        -- is an upgrade: a roll that drops at 318 and crests to 334 beats the 321 you are wearing
+        local function upto(base)
+          if not base then return nil end
+          local tr = L.TrackOf and L.TrackOf(base)
+          local top = tr and L.TRACK[tr] and L.TRACK[tr].ilvl and L.TRACK[tr].ilvl[6]
+          return (top and top > base) and (base .. "\226\134\146" .. top) or tostring(base)
+        end
+        local k, b = upto(kill), upto(roll)
+        local lv = (k and ("kill " .. k) or "") .. ((k and b) and "   " or "") .. (b and ("roll " .. b) or "")
+        GameTooltip:AddDoubleLine("   " .. (r.it.name or "?") .. (r.bis and "  BiS" or ""),
+          lv ~= "" and lv or tostring(r.route and r.route.ilvl or "?"), 0.85, 0.78, 1, 0.8, 0.8, 0.8)
+      end
+    else
+      GameTooltip:AddLine("Nothing here you want.", 0.7, 0.7, 0.7)
+    end
+    GameTooltip:AddLine("Click: open > rolled > killed  ·  right-click: open", T.RGB("muted"))
     GameTooltip:Show()
   end)
   b:SetScript("OnLeave", GameTooltip_Hide)
-  tiles[i] = b
+  gridCells[cellKey(r, c)] = b
+  return b
+end
+
+local function makeDungeonTile(parent, i)
+  local b = CreateFrame("Button", nil, parent, "BackdropTemplate")
+  b:SetSize(GRID_CW, GRID_CH)
+  b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+  T.Panel(b, "card", 0.85, 0.5)
+  b.st = T.IconTex(b, "tick", 11, "emerald"); b.st:SetPoint("LEFT", 6, 0)
+  b.t = T.Text(b, "label", 10, "soft", "LEFT"); b.t:SetPoint("LEFT", 20, 0); b.t:SetWidth(GRID_CW - 40)
+  b.n = T.Text(b, "display", 10, "topaz", "RIGHT"); b.n:SetPoint("RIGHT", -5, 0)
+  b:SetScript("OnClick", function(s, btn)
+    local d = s.dungeon
+    if not d then return end
+    if btn == "RightButton" then L.SetBossStatus(d.name, 0, "open") else L.CycleBossStatus(d.name, 0) end
+    refresh()
+  end)
+  b:SetScript("OnEnter", function(s)
+    local d = s.dungeon
+    if not d then return end
+    GameTooltip:SetOwner(s, "ANCHOR_BOTTOM")
+    GameTooltip:AddLine(d.name, T.RGB("amethyst"))
+    local st = L.BossStatus(d.name, 0)
+    GameTooltip:AddLine("This week: " .. STATUS[st].text, 1, 1, 1)
+    GameTooltip:AddLine((d.wanted or 0) .. " item" .. ((d.wanted or 0) == 1 and "" or "s") .. " you want from the end-of-run chest", 1, 1, 1)
+    GameTooltip:AddLine("A Mythic+ completion spends a bonus roll too.", 0.7, 0.7, 0.7, true)
+    GameTooltip:AddLine("Click: open > rolled > done  ·  right-click: open", T.RGB("muted"))
+    GameTooltip:Show()
+  end)
+  b:SetScript("OnLeave", GameTooltip_Hide)
+  dungeonTiles[i] = b
   return b
 end
 
@@ -403,49 +618,151 @@ local function build()
   close:SetScript("OnClick", function() win:Hide() end)
 
   -- row 1: what to show, which ways
-  win.scope = T.Segmented(win, { { "bis", "BiS" }, { "wish", "Wishlist" }, { "all", "All upgrades" } },
+  win.scope = T.Segmented(win, { { "bis", "Targets" }, { "wish", "Wishlist" }, { "all", "All upgrades" } },
     function() return opts.scope end, function(k) opts.scope = k; state.offset = 0; refresh() end, 24)
   win.scope:SetPoint("TOPLEFT", 16, -42)
   win.toggles = {
-    toggle(win, "Bonus roll", function() return opts.modes.bonus end, function(v) opts.modes.bonus = v end, 90),
-    toggle(win, "Kill drops", function() return opts.modes.drop end, function(v) opts.modes.drop = v; opts.drops = v end, 90),
-    toggle(win, "Vault", function() return opts.modes.vault end, function(v) opts.modes.vault = v end, 70),
-    toggle(win, "Craft & delves", function() return opts.modes.other end, function(v) opts.modes.other = v end, 110),
+    toggle(win, "Rolls", function() return opts.modes.bonus end, function(v) opts.modes.bonus = v end, 62),
+    toggle(win, "Drops", function() return opts.modes.drop end, function(v) opts.modes.drop = v; opts.drops = v end, 62),
+    toggle(win, "Vault", function() return opts.modes.vault end, function(v) opts.modes.vault = v end, 58),
+    toggle(win, "Craft", function() return opts.modes.other end, function(v) opts.modes.other = v end, 62),
   }
   local prev
   for _, b in ipairs(win.toggles) do
     if prev then b:SetPoint("LEFT", prev, "RIGHT", 4, 0) else b:SetPoint("LEFT", win.scope, "RIGHT", 16, 0) end
     prev = b
   end
-  -- steppers on the right of row 1
+  -- the three steppers live in one row frame pinned to the window's right edge, so the group is
+  -- measured first and then placed: no stepper can end up past the edge however wide its label is
   win.syncs = {}
-  local sx = 16 + 540
-  local f1, w1 = stepper(win, "MYTHIC FARM", sx, -42,
+  local srow = CreateFrame("Frame", nil, win)
+  srow:SetHeight(26)
+  srow:SetPoint("TOPRIGHT", win, "TOPRIGHT", -14, -42)
+  win.srow = srow
+  local f1, w1, e1 = stepper(srow, "MYTHIC FARM", 0, 0,
     function() return opts.farm end,
     function(d) local n = L.MythicBossCount(); local v = (opts.farm or n) + d; opts.farm = (v >= n) and nil or math.max(0, v) end,
     function(v) local n = L.MythicBossCount(); return (v or n) .. "/" .. n end,
     "Mythic bosses you have on farm. Bosses past this count use Heroic loot and Heroic bonus rolls.")
   win.syncs[#win.syncs + 1] = f1
-  local f2, w2 = stepper(win, "ROLLS NOW", sx + w1 + 12, -42,
+  local f2, w2, e2 = stepper(srow, "ROLLS NOW", e1, 0,
     function() return opts.rollsNow or L.BonusRolls() end,
     function(d) opts.rollsNow = math.max(0, (opts.rollsNow or L.BonusRolls() or 0) + d) end,
     function(v) return tostring(v or 0) end, "Bonus rolls you can spend this week. Starts from your Nebulous Voidcores.")
   win.syncs[#win.syncs + 1] = f2
-  local f3 = stepper(win, "PER WEEK", sx + w1 + w2 + 24, -42,
+  local f3, w3 = stepper(srow, "PER WEEK", e2, 0,
     function() return opts.rollsWeek end, function(d) opts.rollsWeek = math.max(0, math.min(10, opts.rollsWeek + d)) end,
     function(v) return tostring(v) end, "Bonus rolls you earn each week. Unused ones carry over.")
   win.syncs[#win.syncs + 1] = f3
+  srow:SetWidth(w1 + w2 + w3 + 40)   -- 20px between each pair, the stepper's default gap
 
-  -- boss map
+  -- the season grid: difficulty down the side, this season's bosses across the top
   win.mapHead = T.Text(win, "label", 11, "muted"); win.mapHead:SetPoint("TOPLEFT", 16, MAP_Y + 6)
-  win.mapHead:SetText("THIS WEEK  ·  click a boss: open > rolled > killed  ·  star = rolled, tick = killed, ring = suggested, faded = past your Mythic farm")
-  win.map = CreateFrame("Frame", nil, win); win.map:SetPoint("TOPLEFT", 16, MAP_Y - 8); win.map:SetSize(W - 32, 56)
+  win.mapHead:SetWidth(W - 32); win.mapHead:SetJustifyH("LEFT"); win.mapHead:SetWordWrap(true)
+  -- one line: the window is 1028 wide inside its margins and the grid starts 18px below this
+  win.mapHead:SetText("THIS WEEK  ·  click a cell: open > rolled > killed  ·  right-click clears  ·  the number is what you want there")
+  win.map = CreateFrame("Frame", nil, win)
+  win.map:SetPoint("TOPLEFT", 16, MAP_Y - 20)
+  win.map:SetSize(W - 32, 4 * GRID_CH + 3 * GRID_GY + 18)
+
+  -- column headings and one clickable label per difficulty row
+  win.colHeads, win.rowHeads = {}, {}
+  -- 20 is a ceiling, not an expectation: the draw makes one per boss and hides the rest
+  for i = 1, 20 do
+    local h = T.Text(win.map, "label", 9, "muted", "LEFT")
+    h:SetPoint("TOPLEFT", GRID_LBL + (i - 1) * (GRID_CW + GRID_GX), 0)
+    h:SetWidth(GRID_CW); h:Hide()
+    win.colHeads[i] = h
+  end
+  for r, d in ipairs(DIFF_ROWS) do
+    local b = T.Button(win.map, d[2], GRID_LBL - 6, GRID_CH, function()
+      -- one click sets the whole row: cleared if anything is marked, all killed if none is
+      local bosses = L.SeasonBosses()
+      local anyMarked = false
+      for _, bs in ipairs(bosses) do if bs.diffs[d[1]] and L.BossStatus(bs.name, d[1]) ~= "open" then anyMarked = true end end
+      for _, bs in ipairs(bosses) do
+        if bs.diffs[d[1]] then L.SetBossStatus(bs.name, d[1], anyMarked and "open" or "killed") end
+      end
+      refresh()
+    end)
+    b:SetPoint("TOPLEFT", 0, -(18 + (r - 1) * (GRID_CH + GRID_GY)))
+    if b.text then b.text:SetTextColor(T.RGB(d[3])) end
+    b:HookScript("OnEnter", function(s)
+      GameTooltip:SetOwner(s, "ANCHOR_RIGHT")
+      GameTooltip:AddLine(L.DIFF_NAME[d[1]] or d[2], T.RGB(d[3]))
+      GameTooltip:AddLine("Click to mark the whole row killed, or to clear it.", 1, 1, 1, true)
+      GameTooltip:Show()
+    end)
+    b:HookScript("OnLeave", GameTooltip_Hide)
+    win.rowHeads[r] = b
+  end
+
+  -- the Mythic+ strip under the grid
+  local dy = MAP_Y - 20 - (4 * GRID_CH + 3 * GRID_GY + 18) - 12
+  win.dungeonHead = T.Text(win, "label", 9, "muted", "LEFT")
+  win.dungeonHead:SetPoint("TOPLEFT", 16, dy + 2); win.dungeonHead:SetText("MYTHIC+")
+
+  -- one Mythic-farm switch per lair boss, on the free right-hand side of this line. They are not in
+  -- the raid's kill order, so the single MYTHIC FARM count cannot speak for them.
+  win.lairHead = T.Text(win, "label", 9, "muted", "RIGHT")
+  win.lairHead:SetPoint("TOPRIGHT", win, "TOPRIGHT", -16, dy + 2)
+  win.lairHead:SetText("LAIRS ON MYTHIC FARM")
+  win.lairToggles = {}
+  for i = 1, 4 do
+    local b = T.Button(win, "", 92, 18, function()
+      local nm = win.lairToggles[i] and win.lairToggles[i].boss
+      if not nm then return end
+      L.SetLairOnFarm(nm, not L.LairOnFarm(nm, opts), opts)
+      refresh()
+    end)
+    -- on the MYTHIC+ heading line, where nothing else sits: the tile row below is clear of it
+    b:SetPoint("TOPRIGHT", win, "TOPRIGHT", -16 - (i - 1) * 96, dy + 3)
+    function b:Sync()
+      local on = self.boss and L.LairOnFarm(self.boss, opts)
+      if self.SetBackdropColor then self:SetBackdropColor(T.RGB(on and "amethyst" or "raised", on and 1 or 0.8)) end
+      if self.text then self.text:SetTextColor(T.RGB(on and "void" or "muted")) end
+    end
+    b:HookScript("OnEnter", function(s)
+      if not s.boss then return end
+      GameTooltip:SetOwner(s, "ANCHOR_TOP")
+      GameTooltip:AddLine(s.boss, T.RGB("amethyst"))
+      GameTooltip:AddLine(L.LairOnFarm(s.boss, opts) and "On Mythic farm: the plan may send you here on Mythic."
+        or "Not on Mythic farm: Mythic loot from here is left out of the plan.", 1, 1, 1, true)
+      GameTooltip:Show()
+    end)
+    b:HookScript("OnLeave", GameTooltip_Hide)
+    b:Hide()
+    win.lairToggles[i] = b
+  end
+  win.dungeons = CreateFrame("Frame", nil, win)
+  win.dungeons:SetPoint("TOPLEFT", 16, dy - 24); win.dungeons:SetSize(W - 32, GRID_CH)
+  win.delve = T.Button(win, "Delves", 86, GRID_CH, function()
+    opts.modes.delve = not opts.modes.delve
+    refresh()
+  end)
+  win.delve:SetPoint("TOPLEFT", 16 + GRID_LBL + 8 * (GRID_CW + GRID_GX) + 10, dy - 24)
+  function win.delve:Sync()
+    local on = opts.modes.delve
+    if self.SetBackdropColor then self:SetBackdropColor(T.RGB(on and "amethyst" or "raised", on and 1 or 0.8)) end
+    if self.text then self.text:SetTextColor(T.RGB(on and "void" or "muted")) end
+  end
+  win.delve:HookScript("OnEnter", function(s)
+    GameTooltip:SetOwner(s, "ANCHOR_BOTTOM")
+    GameTooltip:AddLine("Delves", T.RGB("amethyst"))
+    GameTooltip:AddLine("Count Labyrinth armaments and delve loot as a way of getting an item. They are not luck, so they show up as something to go and do rather than a roll.", 1, 1, 1, true)
+    GameTooltip:Show()
+  end)
+  win.delve:HookScript("OnLeave", GameTooltip_Hide)
 
   -- flow (weeks down)
   win.flow = CreateFrame("Frame", nil, win); win.flow:SetPoint("TOPLEFT", 16, FLOW_Y); win.flow:SetSize(FLOW_W, H + FLOW_Y - 36)
   win.flow:SetClipsChildren(true)
   win.flow:EnableMouseWheel(true)
-  win.flow:SetScript("OnMouseWheel", function(_, d) state.offset = math.max(0, state.offset - d * 40); ns.Planner_Refresh(true) end)
+  win.flow:SetScript("OnMouseWheel", function(self, d)
+    local maxOff = math.max(0, (state.contentH or 0) - self:GetHeight())
+    state.offset = math.max(0, math.min(maxOff, state.offset - d * 48))
+    ns.Planner_Refresh(true)
+  end)
   win.summary = T.Text(win, "strong", 12, "soft"); win.summary:SetPoint("BOTTOMLEFT", win.flow, "TOPLEFT", 0, 8); win.summary:SetWidth(FLOW_W)
   win.summary:SetWordWrap(true)
 
@@ -453,7 +770,9 @@ local function build()
   local div = win:CreateTexture(nil, "ARTWORK"); div:SetColorTexture(T.RGB("edge", 0.25)); div:SetWidth(1)
   div:SetPoint("TOPLEFT", 16 + FLOW_W + 12, FLOW_Y); div:SetPoint("BOTTOMLEFT", 16 + FLOW_W + 12, 36)
   win.side = CreateFrame("Frame", nil, win); win.side:SetPoint("TOPLEFT", 16 + FLOW_W + 24, FLOW_Y); win.side:SetSize(SIDE_W, H + FLOW_Y - 36)
-  local sh = T.Text(win.side, "label", 11, "muted"); sh:SetPoint("TOPLEFT", 0, 0); sh:SetText("YOUR ITEMS  ·  chance you have it by week 4")
+  -- the width is pinned to the column so a longer heading wraps instead of running off the window
+  local sh = T.Text(win.side, "label", 11, "muted"); sh:SetPoint("TOPLEFT", 0, 0)
+  sh:SetWidth(SIDE_W); sh:SetWordWrap(true); sh:SetText("YOUR ITEMS  ·  chance by week 4")
   win.assume = T.Text(win, "body", 10, "muted"); win.assume:SetPoint("BOTTOMLEFT", 16, 12); win.assume:SetWidth(W - 32); win.assume:SetWordWrap(true)
   win.assume:SetText("A bonus roll gives 1 item from that boss's loot for your spec, all equally likely; one roll per boss each week; Mythic+ completions take rolls too. Weight = QE upgrade % × priority (P1 ×2) × BiS ×1.5. Items you own at the target level or higher drop out. Right-click a roll card to choose another boss; later weeks re-plan.")
   win:SetScript("OnShow", function() L._lock = nil; if not L.items then L.Refresh(true) end; ns.Planner_Refresh() end)
@@ -462,7 +781,10 @@ end
 
 ---------------------------------------------------------------- draw
 local function layoutFlow(sim, opts)
-  local y = -state.offset
+  -- y walks DOWN the flow in negative offsets from the frame's top-left, so a positive scroll
+  -- offset has to LIFT the content (start above the top edge) to reveal what is further down.
+  -- Starting at -offset pushed it the other way, which is why the wheel did nothing useful.
+  local y = state.offset
   local ci, hi = 0, 0
   local function head(text, right)
     hi = hi + 1
@@ -521,7 +843,12 @@ local function layoutFlow(sim, opts)
         else
           local s = rc.choice.s
           c.title:SetText("Roll · " .. shortName(s.label) .. (s.diff and (" (" .. (L.DIFF_NAME[s.diff] or ""):sub(1, 1) .. ")") or ""))
-          c.l1:SetText(string.format("%d wanted of %d  ·  %d%% for one", #rc.why, s.n, math.floor(rc.chance * 100 + 0.5)))
+          if s.n == 1 and #rc.why > 0 then
+            c.l1:SetText("|cff00e676guaranteed|r  ·  one item left in the pool")
+          else
+            c.l1:SetText(string.format("%d wanted of %d%s  ·  %d%% for one", #rc.why, s.n,
+              s.poolTracked and " left" or "", math.floor(rc.chance * 100 + 0.5)))
+          end
           local top = rc.why[1]
           c.l2:SetText(top and (shortName(top.it.name) .. "  " .. itemTag(top)) or "")
           local alt = rc.options[2]
@@ -531,7 +858,12 @@ local function layoutFlow(sim, opts)
           if skip then tt:AddLine("Keep this roll", T.RGB("amethyst")); tt:AddLine("Not spent this week; it carries over.", 1, 1, 1); return end
           local s = rc.choice.s
           tt:AddLine(s.label .. (s.diff and ("  ·  " .. (L.DIFF_NAME[s.diff] or "")) or ""), T.RGB("amethyst"))
-          tt:AddLine(string.format("A roll here gives 1 of %d items your spec can get. %d%% that it's one you want.", s.n, math.floor(rc.chance * 100 + 0.5)), 1, 1, 1, true)
+          if s.n == 1 then
+            tt:AddLine("One item left in this pool, so the next roll here is guaranteed to be it.", 0, 0.9, 0.46, true)
+          else
+            tt:AddLine(string.format("A roll here gives 1 of %d items your spec can still receive%s. %d%% that it's one you want.",
+              s.n, s.poolTracked and " (what you have already rolled is ticked off in /sk rolls)" or "", math.floor(rc.chance * 100 + 0.5)), 1, 1, 1, true)
+          end
           tt:AddLine(" ")
           tt:AddLine("Why here", T.RGB("amethyst"))
           for i, r in ipairs(rc.why) do
@@ -560,7 +892,21 @@ local function layoutFlow(sim, opts)
         c.l3:SetText(string.format("%d%% chance per kill of an item", opts.dropPct))
         c.tip = function(tt)
           tt:AddLine("Kills this week", T.RGB("amethyst"))
-          for _, k in ipairs(wk.kills) do tt:AddDoubleLine(k.s.label, string.format("~%.2f items", k.exp), 1, 1, 1, 0.8, 0.8, 0.8) end
+          -- name the items, not just the boss: "why is it sending me here" should be answerable
+          -- from the tooltip rather than by guessing
+          for _, k in ipairs(wk.kills) do
+            tt:AddDoubleLine(k.s.label .. (k.s.diff and ("  ·  " .. (L.DIFF_NAME[k.s.diff] or "")) or ""),
+              string.format("~%.2f items", k.exp), 1, 1, 1, 0.8, 0.8, 0.8)
+            local n = 0
+            for _, r in ipairs(k.s.items) do
+              if r.p > 0.001 and n < 4 then
+                n = n + 1
+                tt:AddLine("   " .. (r.it.name or "?") .. "  " .. (r.route and r.route.ilvl or "?")
+                  .. (r.bis and "  BiS" or ""), 0.65, 0.6, 0.78)
+              end
+            end
+            if n == 0 then tt:AddLine("   nothing you want - tell me, this is a bug", 1, 0.4, 0.4) end
+          end
           tt:AddLine(string.format("Group loot: %d%% chance a kill gives you an item, any from the table. Change with the drop setting.", opts.dropPct), 0.7, 0.7, 0.7, true)
         end
       end)
@@ -580,18 +926,36 @@ local function layoutFlow(sim, opts)
     if wk.share >= 0.995 then break end
   end
   if #sim.owned > 0 then
-    head("ALREADY YOURS", #sim.owned .. " item" .. (#sim.owned == 1 and "" or "s") .. " in your bags or equipped")
-    for _, r in ipairs(sim.owned) do
+    -- your picks that the plan deliberately left out, with what is standing in the way. Highest
+    -- priority first: a priority-1 pick being parked is the most useful thing on this screen.
+    local parked = {}
+    for _, r in ipairs(sim.owned) do parked[#parked + 1] = r end
+    table.sort(parked, function(a, b) return (a.prio or 99) < (b.prio or 99) end)
+    head("NOT IN THE PLAN", #parked .. " item" .. (#parked == 1 and "" or "s") .. " you want that nothing this week improves")
+    for _, r in ipairs(parked) do
       card(function(c)
-        T.Icon(c.icon, "tick"); if T.hasCore then c.icon:SetVertexColor(T.RGB("emerald")) end
-        c:SetBackdropBorderColor(T.RGB("emerald", 0.4))
-        c.title:SetText(shortName(r.it.name)); c.l1:SetText("you have it at " .. (r.ownedAt or "?")); c.l2:SetText(itemTag(r)); c.l3:SetText("not in the plan")
+        T.Icon(c.icon, "tick"); if T.hasCore then c.icon:SetVertexColor(T.RGB(r.prio and r.prio <= 3 and "topaz" or "emerald")) end
+        c:SetBackdropBorderColor(T.RGB(r.prio and r.prio <= 3 and "topaz" or "emerald", 0.4))
+        c.title:SetText(shortName(r.it.name))
+        c.l1:SetText(r.held and "held for its best version"
+          or (r.rolledOut and "already rolled there this table" or ("you have it at " .. (r.ownedAt or "?"))))
+        c.l2:SetText(r.why or itemTag(r))
+        c.l3:SetText(itemTag(r))
+        c.tip = function(tt)
+          tt:AddLine(r.it.name or "?", T.RGB("amethyst"))
+          tt:AddLine(r.held and "This is a BiS pick, so the plan only sends you for the best version of it. Make it the slot's target instead if you would take a lesser one."
+            or (r.rolledOut and "You have already rolled this off the table for this spec and difficulty."
+            or ("You have it at " .. (r.ownedAt or "?") .. ", so nothing you can reach this week is an upgrade.")), 1, 1, 1, true)
+          if r.why then tt:AddLine(r.why, 0.85, 0.78, 1, true) end
+          tt:AddLine("/sk why " .. (r.it.id or "") .. " prints the whole reason in chat.", T.RGB("muted"))
+        end
       end)
     end
     endRow()
   end
   for i = ci + 1, #cards do cards[i]:Hide() end
   for i = hi + 1, #heads do heads[i]:Hide() end
+  -- y ends at (offset - total height), so the height is what it travelled
   state.contentH = -y + state.offset
 end
 
@@ -608,7 +972,7 @@ function ns.Planner_Refresh(scrollOnly)
   if win.scope.Sync then win.scope:Sync() end
   for _, b in ipairs(win.toggles) do b:Sync() end
   for _, f in ipairs(win.syncs) do f() end
-  win.sub:SetText(opts.scope == "bis" and "your BiS" or (opts.scope == "all" and "every upgrade" or "your wishlist"))
+  win.sub:SetText(opts.scope == "bis" and "your targets, BiS and alternatives" or (opts.scope == "all" and "every upgrade" or "your wishlist"))
   local rolls = sim.rollsNow or 0
   if #sim.items == 0 then
     win.summary:SetText(string.format("%d bonus roll%s now. Nothing left to luck into with these settings.", rolls, rolls == 1 and "" or "s"))
@@ -617,46 +981,124 @@ function ns.Planner_Refresh(scrollOnly)
       rolls, rolls == 1 and "" or "s", opts.rollsWeek, #sim.items, #sim.items == 1 and "" or "s",
       sim.w50 and ("by week " .. sim.w50) or ("not in " .. opts.weeks .. " weeks"), sim.w90 and ("by week " .. sim.w90) or ("not in " .. opts.weeks .. " weeks")))
   end
-  -- boss map
-  local suggest = {}
+  ---------------------------------------------------------------- the season grid
+  -- what the plan wants from each boss at each difficulty, and where it is sending you this week
+  local suggest, byBossDiff, byDungeon = {}, {}, {}
   local wk1 = sim.weeks[1]
-  for _, rc in ipairs(wk1 and wk1.rolls or {}) do if rc.choice ~= "skip" and rc.choice.s.encName then suggest[rc.choice.s.encName:lower()] = true end end
-  local wanted = {}
-  for _, s in ipairs(sim.sources) do if s.encName then wanted[s.encName:lower()] = #s.items end end
-  local bosses, seen = {}, {}
-  for _, it in ipairs(L.items or {}) do
-    if it.raid and it.bonus and it.encName and it.encName ~= "" and not seen[it.encName] then
-      seen[it.encName] = true
-      bosses[#bosses + 1] = { name = it.encName, inst = it.inst or "", idx = (it.lair and 100 or 0) + (it.encIndex or 0), n = it.encIndex or 0,
-                              diff = bossDiff(it, opts), icon = it.encIcon, lair = it.lair, wanted = wanted[it.encName:lower()] }
+  for _, rc in ipairs(wk1 and wk1.rolls or {}) do
+    if rc.choice ~= "skip" and rc.choice.s.encName then
+      suggest[rc.choice.s.encName:lower() .. ":" .. tostring(rc.choice.s.diff)] = true
     end
   end
-  table.sort(bosses, function(a, b) return a.idx < b.idx end)
-  local x = 0
+  for _, s in ipairs(sim.sources) do
+    if s.encName and s.encName ~= "" then
+      byBossDiff[s.encName:lower() .. ":" .. tostring(s.diff)] = s.items
+    elseif s.inst then
+      byDungeon[s.inst:lower()] = s.items
+    end
+  end
+
+  local bosses = L.SeasonBosses()
+  local farm = opts.farm
   local lastInst
-  for i, bdata in ipairs(bosses) do
-    if lastInst and bdata.inst ~= lastInst then x = x + 12 end
-    lastInst = bdata.inst
-    local t = tiles[i] or makeTile(win.map, i)
-    t.boss = bdata
-    t:ClearAllPoints(); t:SetPoint("TOPLEFT", x, 0)
-    x = x + 68
-    local st = L.BossStatus(bdata.name, bdata.diff)
-    t.tex:SetTexture(bdata.icon or "Interface\\EncounterJournal\\UI-EJ-BOSS-Default")
-    t.tex:SetDesaturated(st ~= "open"); t.tex:SetAlpha(st ~= "open" and 0.5 or 1)
-    t.n:SetText(bdata.lair and "" or bdata.n)
+  -- the columns are sized to fit the window, never the other way round: a season with more bosses
+  -- than expected makes the cells narrower instead of pushing the grid off the right-hand edge
+  local nb = #bosses
+  local gaps = 0
+  do
+    local li
+    for _, b in ipairs(bosses) do if li and b.inst ~= li then gaps = gaps + 1 end; li = b.inst end
+  end
+  local avail = (W - 32) - GRID_LBL - gaps * 10 - math.max(0, nb - 1) * GRID_GX
+  local cw = math.max(40, math.min(GRID_CW, math.floor(avail / math.max(1, nb))))
+  for r, d in ipairs(DIFF_ROWS) do
+    local diff = d[1]
+    local x, lastI = GRID_LBL, nil
+    for c, b in ipairs(bosses) do
+      if lastI and b.inst ~= lastI then x = x + 10 end       -- a gap between the raid and the lairs
+      lastI = b.inst
+      local cell = gridCells[cellKey(r, c)] or makeCell(win.map, r, c)
+      cell:SetWidth(cw)
+      cell.t:SetWidth(math.max(10, cw - 40))
+      cell:ClearAllPoints()
+      cell:SetPoint("TOPLEFT", x, -(18 + (r - 1) * (GRID_CH + GRID_GY)))
+      x = x + cw + GRID_GX
+      if r == 1 then
+        local h = win.colHeads[c]
+        if h then
+          h:ClearAllPoints(); h:SetPoint("TOPLEFT", x - cw - GRID_GX, 0)
+          h:SetWidth(cw)
+          h:SetText(tinyName(b.name, cw)); h:Show()
+        end
+        if b.inst ~= lastInst then lastInst = b.inst end
+      end
+      local items = byBossDiff[b.name:lower() .. ":" .. tostring(diff)] or {}
+      local available = b.diffs[diff] and true or false
+      local blocked = available and diff == 16 and (
+        (b.lair and not L.LairOnFarm(b.name, opts))
+        or (not b.lair and farm and (b.index or 0) > farm))
+      cell.cell = { boss = b, diff = diff, available = available, blocked = blocked, items = items,
+                    suggest = suggest[b.name:lower() .. ":" .. tostring(diff)] or false,
+                    why = (not available) and "This boss has no loot on this difficulty." or nil }
+      if not available then
+        cell.st:Hide()
+        cell.t:SetText("-"); cell.t:SetTextColor(T.RGB("edge", 0.8))
+        cell.n:SetText("")
+        cell:SetBackdropColor(T.RGB("card", 0.3)); cell:SetBackdropBorderColor(T.RGB("edge", 0.15))
+        cell:SetAlpha(0.45)
+        cell.ring:Hide()
+      else
+        local st = L.BossStatus(b.name, diff)
+        local S = STATUS[st]
+        cell.st:SetShown(S.icon ~= nil)
+        if S.icon then T.Icon(cell.st, S.icon); if T.hasCore then cell.st:SetVertexColor(T.RGB(S.color)) end end
+        cell.t:SetText(S.text); cell.t:SetTextColor(T.RGB(S.color))
+        cell.n:SetText(#items > 0 and tostring(#items) or "")
+        cell:SetBackdropColor(T.RGB("card", st == "open" and 0.85 or 0.45))
+        cell:SetBackdropBorderColor(T.RGB(d[3], blocked and 0.25 or 0.65))
+        cell:SetAlpha(blocked and 0.5 or 1)
+        cell.ring:SetShown(cell.cell.suggest)
+      end
+      cell:Show()
+    end
+    for c = #bosses + 1, (state.gridCols or 0) do
+      local cell = gridCells[cellKey(r, c)]
+      if cell then cell:Hide() end
+    end
+  end
+  for c = #bosses + 1, math.max(state.gridCols or 0, 20) do if win.colHeads[c] then win.colHeads[c]:Hide() end end
+  state.gridCols = math.max(state.gridCols or 0, #bosses)   -- so a shorter list hides what it leaves behind
+  for _, b in ipairs(win.rowHeads or {}) do if b.Sync then b:Sync() end end
+  local lairs = {}
+  for _, b in ipairs(bosses) do if b.lair then lairs[#lairs + 1] = b end end
+  for i, tb in ipairs(win.lairToggles or {}) do
+    local b = lairs[i]
+    tb.boss = b and b.name or nil
+    if b then tb:SetLabel(tinyName(b.name, 92)); tb:Sync(); tb:Show() else tb:Hide() end
+  end
+  if win.lairHead then win.lairHead:SetShown(#lairs > 0) end
+
+  -- the Mythic+ strip
+  local dungeons = L.SeasonDungeons()
+  for i, dg in ipairs(dungeons) do
+    if i > 8 then break end
+    local t = dungeonTiles[i] or makeDungeonTile(win.dungeons, i)
+    local items = byDungeon[(dg.name or ""):lower()] or {}
+    dg.wanted = #items
+    t.dungeon = dg
+    t:ClearAllPoints(); t:SetPoint("TOPLEFT", GRID_LBL + (i - 1) * (GRID_CW + GRID_GX), 0)
+    local st = L.BossStatus(dg.name, 0)
     local S = STATUS[st]
     t.st:SetShown(S.icon ~= nil)
     if S.icon then T.Icon(t.st, S.icon); if T.hasCore then t.st:SetVertexColor(T.RGB(S.color)) end end
-    local pastFarm = bdata.diff == 15 and not bdata.lair
-    t.t:SetText(S.text .. (pastFarm and " · H" or "") .. ((bdata.wanted or 0) > 0 and ("  " .. bdata.wanted) or ""))
-    t.t:SetTextColor(T.RGB(S.color))
-    t:SetAlpha(pastFarm and 0.6 or 1)
-    t.suggest = suggest[bdata.name:lower()] or false
-    t.ring:SetShown(t.suggest)
+    t.t:SetText(dg.short or tinyName(dg.name)); t.t:SetTextColor(T.RGB(st == "open" and "soft" or S.color))
+    t.n:SetText(#items > 0 and tostring(#items) or "")
+    t:SetBackdropColor(T.RGB("card", st == "open" and 0.85 or 0.45))
+    t:SetBackdropBorderColor(T.RGB("emerald", 0.45))
     t:Show()
   end
-  for i = #bosses + 1, #tiles do tiles[i]:Hide() end
+  for i = math.min(#dungeons, 8) + 1, #dungeonTiles do dungeonTiles[i]:Hide() end
+  if win.delve and win.delve.Sync then win.delve:Sync() end
   -- flow
   layoutFlow(sim, opts)
   -- items on the right
@@ -705,4 +1147,111 @@ end
 function ns.PlannerOpen()
   if not win then build() end
   win:Show(); win:Raise()
+end
+
+---------------------------------------------------------------- /sk why
+-- Walks the exact chain the planner walks and says, at each gate, whether the item survived it and
+-- why. Written because three separate "it isn't showing my X" reports each turned out to be a
+-- different gate, and reading the code to guess which one is slower and less reliable than asking.
+function ns.WhyReport(arg)
+  local q = (arg or ""):match("^%s*(.-)%s*$")
+  if q == "" then ns.Print("Usage: /sk why <item name or id>  – e.g. /sk why 271500"); return end
+  local P = ns.Print
+
+  -- find it: by id, then by name across the scan and the wishlist
+  local id = tonumber(q)
+  local it = id and L.ItemByID(id)
+  if not it then
+    local want = q:lower()
+    for _, x in ipairs(L.items or {}) do
+      if (x.name or ""):lower():find(want, 1, true) then it = x; break end
+    end
+    if not it then
+      for slot, list in pairs(L.Wish()) do
+        for _, e in ipairs(list) do
+          if (e.name or ""):lower():find(want, 1, true) then it = L.ItemByID(e.id); break end
+        end
+        if it then break end
+      end
+    end
+  end
+  if not it then P("No item matches '" .. q .. "'. Try the item ID."); return end
+
+  local opts = L.PlanOpts()
+  P(("|cffffffff%s|r (%d)  ·  %s"):format(it.name or "?", it.id or 0, it.slot or "?"))
+  P(("  from: %s%s%s"):format(it.encName and it.encName ~= "" and (it.encName .. " · ") or "",
+    it.inst or "?", it.raid and (" · boss " .. (it.encIndex or 0) .. " of " .. (it.nEnc or 0)) or ""))
+
+  -- 1. is it in scope
+  local onWish, wishSlot = false, nil
+  for slot, list in pairs(L.Wish()) do
+    for _, e in ipairs(list) do if e.id == it.id then onWish, wishSlot = true, slot end end
+  end
+  local pick, pickSlot = L.PickKindOf(it.id)
+  local bis = L.IsBiS(it.id)
+  P(("  wishlist: %s   BiS star: %s   pick: %s   priority: %s"):format(
+    onWish and ("yes (" .. wishSlot .. ")") or "|cffff6666no|r", bis and "yes" or "no",
+    pick and (pick .. " for " .. (pickSlot or "?")) or "none", tostring(L.Prio and L.Prio(it.id) or "-")))
+  local inScope
+  if opts.scope == "all" then inScope = true
+  elseif opts.scope == "bis" then inScope = bis or (pick ~= nil)
+  else inScope = onWish end
+  P(("  scope is '%s' -> %s"):format(opts.scope, inScope and "|cff00e676in scope|r" or "|cffff6666OUT: the plan never looks at it|r"))
+  if not inScope then return end
+
+  -- 2. is the whole slot marked done
+  local done = L.slotByKey[it.slot] and it.slot ~= "emb" and it.slot ~= "other" and L.SlotState(it.slot)
+  P(("  slot '%s' marked finished: %s"):format(it.slot or "?", done and "|cffff6666YES: the whole slot is skipped|r" or "no"))
+  if done then return end
+
+  -- 3. the routes, and which the planner would take
+  local own = L.OwnedLevels()
+  local have = own[it.id]
+  P(("  you own it at: %s"):format(have and tostring(have) or "not owned"))
+  local best, bestWhy
+  for _, r in ipairs(L.Routes(it)) do
+    local m = opts.modes or {}
+    local kind = (r.kind == "delve" and "delve") or (r.kind == "crafted" and "other")
+      or (r.mode == "bonus" and "bonus") or (r.mode == "vault" and "vault") or "drop"
+    local why
+    if not m[kind] then why = "the " .. kind .. " switch is off"
+    elseif it.raid and it.lair and r.diff == 16 and not L.LairOnFarm(it.encName, opts) then
+      why = "Mythic, and this lair is switched off in your Mythic farm"
+    elseif it.raid and not it.lair and r.diff == 16 and opts.farm and (it.encIndex or 0) > opts.farm then
+      why = "Mythic, and this boss is past your farm count of " .. opts.farm
+    elseif have and (r.max or r.ilvl or 0) <= have then
+      why = "tops out at " .. (r.max or r.ilvl or 0) .. ", not above the " .. have .. " you have"
+    end
+    if why then
+      P(("    |cff888888x %s  %s -> %s|r"):format(r.label or "?", tostring(r.ilvl or "?"), why))
+    else
+      local mark = ""
+      if not best or (r.max or r.ilvl or 0) > (best.max or best.ilvl or 0)
+         or ((r.max or 0) == (best.max or 0) and (r.ilvl or 0) > (best.ilvl or 0)) then best, bestWhy = r, kind; mark = "  <- best" end
+      P(("    |cff00e676v %s  ilvl %s, tops out %s|r%s"):format(r.label or "?", tostring(r.ilvl or "?"), tostring(r.max or "?"), mark))
+    end
+  end
+  if not best then P("  |cffff6666No way to get it is allowed, so it is not in the plan.|r"); return end
+  P(("  planner takes: |cffffffff%s|r (%s), item level %s"):format(best.label or "?", bestWhy, tostring(best.ilvl or "?")))
+
+  -- 4. the gates inside the simulation
+  local diff = it.raid and best.diff or nil
+  if L.IsRolled and bestWhy == "bonus" then
+    local src = it.raid and { enc = it.enc, name = it.encName, boss = it.encName, raid = true } or { instID = it.instID, name = it.inst }
+    local okR, got = pcall(L.IsRolled, src, { id = it.id, name = it.name }, nil, diff or 15)
+    if okR and got then
+      P("  |cffff6666Ticked off in /sk rolls for this spec and difficulty, so a roll there cannot give it again.|r"); return
+    end
+    P("  not ticked off in /sk rolls")
+  end
+  local need = best.max or best.ilvl or 0
+  if have and have >= need then
+    P(("  |cffff6666Parked: you have it at %d and this way tops out at %d. It shows under NOT IN THE PLAN.|r"):format(have, need))
+    P("  " .. parkedReason(it, have, opts))
+    return
+  end
+  if have then
+    P(("  |cff00e676Upgrade: drops at %d, crests to %d, against the %d you have.|r"):format(best.ilvl or 0, need, have))
+  end
+  P("  |cff00e676It should be in the plan.|r If it is not, tell me and paste this.")
 end

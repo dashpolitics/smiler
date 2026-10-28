@@ -47,19 +47,21 @@ local SIDE = false
 local LIST_W = 872
 local W = LIST_W + 28
 local ROW_H, VIS = 22, 19
-local H = 100 + 24 + ROW_H * VIS + 40
+local H = 108 + 24 + ROW_H * VIS + 40
 local SIDE_X = 640
 -- list columns (x, width)
 local COL = {
   mark = { 4, 10 }, icon = { 18, 20 }, name = { 44, 290 }, slot = { 340, 90 },
-  source = { 436, 300 }, ilvl = { 744, 56 }, bonus = { 806, 50 },
+  -- every column is { x, width } and they no longer touch: GAIN used to be derived from ILVL's
+  -- width and landed on top of both its neighbours, in the header and in every row
+  source = { 436, 288 }, ilvl = { 730, 46 }, gain = { 780, 34 }, bonus = { 820, 50 },
 }
 
 local frame, listRows, slotRows, farmRows = nil, {}, {}, {}
 local dragIcon
 local view = {
   source = "all", raidDiff = 15, key = 12, inst = nil, slot = nil,
-  search = "", wishOnly = false, bonusOnly = false, sort = "power", desc = true, mode = "drop",
+  search = "", wishOnly = false, bonusOnly = false, upOnly = false, sort = "power", desc = true, mode = "drop",
   track = "hero", rank = 1, via = "any",
   offset = 0,
 }
@@ -100,15 +102,27 @@ local function SetSel(b, on)
   b.text:SetTextColor(unpack(on and C.selText or C.dim))
 end
 
-local function Segment(parent, opts, x, y, get, set, bw)
+-- A row of buttons. Anchoring every control to the one before it, rather than to a fixed x, is the
+-- only way the bar cannot overlap itself when a label (a spec name, an instance name) runs long.
+local function Segment(parent, opts, x, y, get, set, bw, after)
   local btns, prev = {}, nil
   for i, o in ipairs(opts) do
     local b = Button(parent, o[2], bw or 50, function() set(o[1]); ns.LootUI_Refresh() end)
-    if prev then b:SetPoint("LEFT", prev, "RIGHT", 2, 0) else b:SetPoint("TOPLEFT", x, y) end
+    if prev then b:SetPoint("LEFT", prev, "RIGHT", 2, 0)
+    elseif after then b:SetPoint("LEFT", after, "RIGHT", x or 8, 0)
+    else b:SetPoint("TOPLEFT", x, y) end
     b.value = o[1]
     btns[i], prev = b, b
   end
   return function() for _, b in ipairs(btns) do SetSel(b, b.value == get()) end end, prev
+end
+
+-- a small caps label that sits to the right of whatever came before it
+local function GroupLabel(parent, text, after, gap)
+  local l = fs(parent, 11, C.dim)
+  l:SetPoint("LEFT", after, "RIGHT", gap or 14, 0)
+  l:SetText(text)
+  return l
 end
 
 local function Tip(f, title, ...)
@@ -161,6 +175,11 @@ local function rebuild()
     if ok and view.slot and it.slot ~= view.slot then ok = false end
     if ok and view.bonusOnly and not it.bonus then ok = false end
     if ok and view.wishOnly and not L.IsWished(it.id) then ok = false end
+    if ok and view.upOnly then
+      local lv = L.IlvlAt(it, view.track, view.rank, view.via)
+      local g = lv and it.slot ~= "other" and L.Gain(it, lv)
+      if not (g and g > 0) then ok = false end
+    end
     if ok and q ~= "" then
       local hay = ((it.name or "") .. " " .. L.SourceText(it) .. " " .. (it.slotText or "")):lower()
       if not hay:find(q, 1, true) then ok = false end
@@ -174,6 +193,10 @@ local function rebuild()
     if s == "source" then return sourceKey(it) end
     if s == "ilvl" then return L.IlvlAt(it, view.track, view.rank, view.via) or 0 end
     if s == "power" then return (L.IlvlAt(it, view.track, view.rank, view.via) or 0) * 1000 + (L.MaxIlvl(it) or 0) end
+    if s == "gain" then
+      local lv = L.IlvlAt(it, view.track, view.rank, view.via)
+      return (lv and it.slot ~= "other" and L.Gain(it, lv)) or -999
+    end
     if s == "stats" then return (L.StatValue(it, view.track, view.rank, view.via)) * 1000 + (L.MaxIlvl(it) or 0) end
     if s == "bonus" then return it.bonus and 0 or 1 end
     if s == "prio" then return 100 - (L.Prio(it.id) or 99) end
@@ -356,11 +379,11 @@ local function CreateListRow(parent, i)
   r.source = fs(r, 12, C.dim)
   r.source:SetPoint("LEFT", COL.source[1], 0); r.source:SetWidth(COL.source[2])
   r.ilvl = fs(r, 12, C.text, "RIGHT", ROW_FONT, "OUTLINE")
-  r.ilvl:SetPoint("LEFT", COL.ilvl[1], 0); r.ilvl:SetWidth(COL.ilvl[2] - 12)
+  r.ilvl:SetPoint("LEFT", COL.ilvl[1], 0); r.ilvl:SetWidth(COL.ilvl[2])
   r.gain = fs(r, 10, C.up, "LEFT")
-  r.gain:SetPoint("LEFT", r.ilvl, "RIGHT", 2, 0); r.gain:SetWidth(30)
+  r.gain:SetPoint("LEFT", COL.gain[1], 0); r.gain:SetWidth(COL.gain[2])
   r.bonus = fs(r, 11, C.gold, "CENTER", TITLE_FONT)
-  r.bonus:SetPoint("LEFT", COL.bonus[1] + 6, 0); r.bonus:SetWidth(COL.bonus[2])
+  r.bonus:SetPoint("LEFT", COL.bonus[1], 0); r.bonus:SetWidth(COL.bonus[2])
   r.bis = GoldOutline(r, 0)
   r.star = Star(r, 14)
   r.star:SetPoint("CENTER", r.icon, "TOPLEFT", 2, -2)
@@ -683,30 +706,60 @@ local function CreateWindow()
 
   -- filter bar 1
   local y1 = -40
-  local srcSync = Segment(frame, { { "all", "All" }, { "raid", "Raid" }, { "mplus", "M+" }, { "crafted", "Craft" }, { "delve", "Delve" } }, 14, y1,
-    function() return view.source end, function(v) view.source = v; view.inst = nil; view.offset = 0 end, 36)
+  local srcSync, srcLast = Segment(frame, { { "all", "All" }, { "raid", "Raid" }, { "mplus", "M+" }, { "crafted", "Craft" }, { "delve", "Delve" } }, 14, y1,
+    function() return view.source end, function(v) view.source = v; view.inst = nil; view.offset = 0 end, 40)
   refreshers[#refreshers + 1] = srcSync
 
-  local tl = fs(frame, 11, C.dim); tl:SetPoint("TOPLEFT", 206, y1 - 4); tl:SetText("TRACK")
-  local trackOpts = {}
-  for _, t in ipairs(L.TRACKS) do trackOpts[#trackOpts + 1] = { t.key, t.short } end
-  local trackSync = Segment(frame, trackOpts, 246, y1,
-    function() return view.track end, function(v) view.track = v end, 52)
-  refreshers[#refreshers + 1] = trackSync
-  Tip(tl, "Upgrade track", "Item levels in the list are for this track. Items that can't drop on it are dimmed. Adding an item remembers the track and how it drops there.")
+  -- TRACK, RANK and VIA were fourteen widgets answering one question: what item level would I end
+  -- up with? They are one button now, labelled with the answer ("Hero 1/6 · bonus roll").
+  local levelBtn = Button(frame, "Hero 1/6", 170, nil)
+  levelBtn:SetPoint("LEFT", srcLast, "RIGHT", 14, 0)
+  local VIA_NAME = { any = "best way", drop = "drop", bonus = "bonus roll", vault = "Great Vault" }
+  levelBtn:SetScript("OnClick", function(self)
+    if not (MenuUtil and MenuUtil.CreateContextMenu) then
+      local keys = {}
+      for _, t in ipairs(L.TRACKS) do keys[#keys + 1] = t.key end
+      local at = 1
+      for i, k in ipairs(keys) do if k == view.track then at = i end end
+      view.track = keys[at % #keys + 1]
+      ns.LootUI_Refresh()
+      return
+    end
+    MenuUtil.CreateContextMenu(self, function(_, root)
+      root:CreateTitle("Item levels shown for")
+      for _, t in ipairs(L.TRACKS) do
+        local lv = t.ilvl and t.ilvl[math.min(6, view.rank or 1)]
+        root:CreateRadio((t.name or t.short) .. (lv and ("   " .. lv) or ""), function() return view.track == t.key end,
+          function() view.track = t.key; ns.LootUI_Refresh() end)
+      end
+      root:CreateDivider()
+      root:CreateTitle("Upgrade rank  ·  1/6 is how it drops")
+      local tr = L.TRACK[view.track]
+      for r = 1, 6 do
+        local lv = tr and tr.ilvl and tr.ilvl[r]
+        root:CreateRadio(r .. "/6" .. (lv and ("   " .. lv) or "") .. (r == 1 and "   as it drops" or (r == 6 and "   fully upgraded" or "")),
+          function() return view.rank == r end,
+          function() view.rank = r; ns.LootUI_Refresh() end)
+      end
+      root:CreateDivider()
+      root:CreateTitle("Counting which way of getting it")
+      for _, v in ipairs({ "any", "drop", "bonus", "vault" }) do
+        root:CreateRadio(VIA_NAME[v], function() return view.via == v end,
+          function() view.via = v; ns.LootUI_Refresh() end)
+      end
+    end)
+  end)
+  refreshers[#refreshers + 1] = function()
+    local short = view.track
+    for _, t in ipairs(L.TRACKS) do if t.key == view.track then short = t.short end end
+    levelBtn.text:SetText(("%s %d/6%s"):format(short, view.rank, view.via ~= "any" and ("  ·  " .. VIA_NAME[view.via]) or ""))
+  end
+  Tip(levelBtn, "Item levels shown for",
+    "Every item level in the list is what that item would be on this upgrade track at this rank, got this way.",
+    "1/6 is how it drops; each rank above costs crests. Adding an item to your wishlist remembers this choice.")
 
-  local kl = fs(frame, 11, C.dim); kl:SetPoint("TOPLEFT", 516, y1 - 4); kl:SetText("RANK")
-  local minus = Button(frame, "-", 20, function() view.rank = math.max(1, view.rank - 1); ns.LootUI_Refresh() end)
-  minus:SetPoint("TOPLEFT", 548, y1)
-  local keyText = fs(frame, 13, C.crystal, "CENTER", ROW_FONT, "OUTLINE")
-  keyText:SetPoint("LEFT", minus, "RIGHT", 2, 0); keyText:SetWidth(30)
-  local plus = Button(frame, "+", 20, function() view.rank = math.min(6, view.rank + 1); ns.LootUI_Refresh() end)
-  plus:SetPoint("LEFT", keyText, "RIGHT", 2, 0)
-  refreshers[#refreshers + 1] = function() keyText:SetText(view.rank .. "/6") end
-  Tip(minus, "Upgrade rank", "1/6 is how it drops; each rank above costs 20 crests. 6/6 is fully upgraded.")
-
-  local inst = Button(frame, "All instances", 110, nil)
-  inst:SetPoint("TOPLEFT", 640, y1)
+  local inst = Button(frame, "All instances", 130, nil)
+  inst:SetPoint("LEFT", levelBtn, "RIGHT", 16, 0)
   inst:SetScript("OnClick", function(self)
     local opts = { { nil, "All instances" } }
     for _, s in ipairs(L.sources or {}) do
@@ -747,7 +800,7 @@ local function CreateWindow()
     if nextVal == "all" then L.allClasses, L.specID = true, nil else L.allClasses, L.specID = false, nextVal end
     L.Refresh(true)
   end)
-  spec:SetPoint("TOPLEFT", 756, y1)
+  spec:SetPoint("LEFT", inst, "RIGHT", 6, 0)
   Tip(spec, "Loot for", "Click to switch spec, or show every class's loot.")
   refreshers[#refreshers + 1] = function()
     if L.allClasses then spec.text:SetText("All classes") return end
@@ -778,35 +831,48 @@ local function CreateWindow()
   wishBtn:SetPoint("LEFT", search, "RIGHT", 8, 0)
   local bisBtn = Button(frame, "BiS", 40, function() view.bisOnly = not view.bisOnly; view.offset = 0; ns.LootUI_Refresh() end)
   bisBtn:SetPoint("LEFT", wishBtn, "RIGHT", 4, 0)
-  local vl = fs(frame, 11, C.dim); vl:SetPoint("TOPLEFT", 400, y2 - 4); vl:SetText("VIA")
-  local viaSync = Segment(frame, { { "any", "Any" }, { "drop", "Drop" }, { "bonus", "Bonus" }, { "vault", "Vault" } }, 426, y2,
-    function() return view.via end, function(v) view.via = v end, 52)
-  refreshers[#refreshers + 1] = viaSync
-  Tip(vl, "Get it via", "Any: the best way on the chosen track. Bonus: only bonus rolls (e.g. Heroic bonus roll on the last two bosses gives Myth 6/6). Adding an item remembers the way.")
-  Tip(bisBtn, "Best in slot", "Show only items you've marked BiS. Alt-click an item (in the list or your wishlist) to mark it.")
-  local slotChip = Button(frame, "", 100, function() view.slot = nil; ns.LootUI_Refresh() end)
-  slotChip:SetPoint("LEFT", bisBtn, "RIGHT", 4, 0)
-  local gl = fs(frame, 11, C.dim); gl:SetPoint("TOPLEFT", 660, y2 - 4); gl:SetText("SORT")
-  local sortSync = Segment(frame, { { "power", "Power" }, { "stats", "Stats" }, { "source", "Source" }, { "slot", "Slot" } }, 698, y2,
+  -- the question most often being asked of this window is "what is actually better than what I am
+  -- wearing", and until now the only way to answer it was to read every row's +N by eye
+  local upBtn = Button(frame, "Upgrades", 72, function() view.upOnly = not view.upOnly; view.offset = 0; ns.LootUI_Refresh() end)
+  upBtn:SetPoint("LEFT", bisBtn, "RIGHT", 4, 0)
+  Tip(upBtn, "Upgrades only", "Hide anything that is not a higher item level than what you are wearing in that slot, at the track and rank chosen above.")
+  local slotChip = Button(frame, "", 110, function() view.slot = nil; ns.LootUI_Refresh() end)
+  slotChip:SetPoint("LEFT", upBtn, "RIGHT", 10, 0)
+  local gl = GroupLabel(frame, "SORT", slotChip, 10)
+  local sortSync = Segment(frame, { { "power", "Power" }, { "stats", "Stats" }, { "source", "Source" }, { "slot", "Slot" } }, 6, y2,
     function() return view.sort end, function(v)
       view.sort = v; view.desc = (v == "power" or v == "stats")
       if v == "stats" and not L.HasStatPrio() then
         print("|cff9d7bffSmilerKeys|r: rank your secondary stats first (Smiler settings > Loot, or the Stats button).")
       end
-    end, 46)
+    end, 52, gl)
   refreshers[#refreshers + 1] = sortSync
   Tip(gl, "Sort", "Power: highest item level on the chosen track first. Stats: most valuable for your secondary stat ranking (item level x stat fit). Source: by raid boss or dungeon. Slot: like your character sheet.")
 
   refreshers[#refreshers + 1] = function()
     SetSel(wishBtn, view.wishOnly)
     SetSel(bisBtn, view.bisOnly)
+    SetSel(upBtn, view.upOnly)
     slotChip:SetShown(view.slot ~= nil)
     if view.slot then slotChip.text:SetText(L.slotByKey[view.slot].label .. "  ×"); SetSel(slotChip, true) end
   end
 
+  -- one line of plain English under the controls, because "Hero 1/6 via bonus" means nothing to
+  -- someone opening this window for the first time
+  frame.legend = fs(frame, 11, C.dim)
+  frame.legend:SetPoint("TOPLEFT", 14, -90)
+  frame.legend:SetWidth(LIST_W - 20)
+  refreshers[#refreshers + 1] = function()
+    local tr = L.TRACK[view.track]
+    local lv = tr and tr.ilvl and tr.ilvl[math.min(6, view.rank or 1)]
+    local via = ({ any = "however it drops best", drop = "from a kill", bonus = "from a bonus roll", vault = "from the Great Vault" })[view.via] or ""
+    frame.legend:SetText(("ILVL is what each item would be at %s %d/6%s%s  ·  GAIN is next to it: how much better than what you wear"):format(
+      (tr and (tr.name or tr.short)) or view.track, view.rank, lv and (" (" .. lv .. ")") or "", via ~= "" and (", " .. via) or ""))
+  end
+
   -- list header
   local list = CreateFrame("Frame", nil, frame)
-  list:SetPoint("TOPLEFT", 14, -100)
+  list:SetPoint("TOPLEFT", 14, -108)
   list:SetSize(LIST_W, ROW_H * VIS + 24)
   local hb = list:CreateTexture(nil, "BACKGROUND")
   hb:SetPoint("TOPLEFT"); hb:SetPoint("TOPRIGHT"); hb:SetHeight(22)
@@ -817,7 +883,8 @@ local function CreateWindow()
     { "slot", "SLOT", COL.slot[1], COL.slot[2] },
     { "source", "DROPS FROM", COL.source[1], COL.source[2] },
     { "ilvl", "ILVL", COL.ilvl[1], COL.ilvl[2] },
-    { "bonus", "TAG", COL.bonus[1], COL.bonus[2] + 6 },
+    { "gain", "GAIN", COL.gain[1], COL.gain[2] },
+    { "bonus", "TAG", COL.bonus[1], COL.bonus[2] },
   }
   for _, c in ipairs(cols) do
     local b = CreateFrame("Button", nil, list)
@@ -861,66 +928,15 @@ local function CreateWindow()
   frame.scroll:SetColorTexture(unpack(C.edge))
   frame.scroll:SetWidth(3)
 
-  -- side panel: wishlist (old layout; the wishlist now sits beside the character sheet)
-  if SIDE then
-  local side = CreateFrame("Frame", nil, frame)
-  side:SetPoint("TOPLEFT", SIDE_X, -100)
-  side:SetSize(W - SIDE_X - 14, H - 140)
-  local wh = fs(side, 11, C.accent, "LEFT", TITLE_FONT); wh:SetPoint("TOPLEFT", 0, 0); wh:SetText("WISHLIST")
-  local wsub = fs(side, 10, C.dim); wsub:SetPoint("LEFT", wh, "RIGHT", 8, 0); wsub:SetText("equipped  |  wanted")
-  frame.embCount = fs(side, 11, C.gold, "RIGHT", TITLE_FONT); frame.embCount:SetPoint("TOPRIGHT", -4, 0)
-  local slotsBox = CreateFrame("Frame", nil, side)
-  slotsBox:SetPoint("TOPLEFT", 0, -20)
-  slotsBox:SetSize(W - SIDE_X - 14, 22 * #L.SLOTS)
-  for i, s in ipairs(L.SLOTS) do slotRows[i] = CreateSlotRow(slotsBox, i, s) end
+  -- the wishlist itself lives beside the character sheet now (Paperdoll.lua); the old side panel
+  -- that used to sit here has gone rather than lingering behind an "if false".
 
-  local fh = fs(side, 11, C.accent, "LEFT", TITLE_FONT)
-  fh:SetPoint("TOPLEFT", 0, -28 - 22 * #L.SLOTS)
-  fh:SetText("PLAN")
-  view.plan = view.plan or "bonus"
-  local planSync = Segment(side, { { "bonus", "Bonus rolls" }, { "farm", "Farm" }, { "vault", "Vault" }, { "craft", "Craft" } },
-    46, -24 - 22 * #L.SLOTS, function() return view.plan end, function(v) view.plan = v end, 70)
-  refreshers[#refreshers + 1] = planSync
-  for i = 1, 5 do
-    local b = CreateFrame("Button", nil, side)
-    b:SetSize(W - SIDE_X - 14, 18)
-    b:SetPoint("TOPLEFT", 0, -50 - 22 * #L.SLOTS - (i - 1) * 18)
-    b.n = fs(b, 13, C.crystal, "RIGHT", ROW_FONT, "OUTLINE"); b.n:SetPoint("LEFT", 0, 0); b.n:SetWidth(18)
-    b.star = Star(b, 12); b.star:SetPoint("LEFT", 21, 0)
-    b.t = fs(b, 12, C.text); b.t:SetPoint("LEFT", 36, 0); b.t:SetWidth(W - SIDE_X - 128)
-    b.br = fs(b, 11, C.gold, "RIGHT", ROW_FONT, "OUTLINE"); b.br:SetPoint("RIGHT", -4, 0); b.br:SetWidth(84)
-    b:SetScript("OnClick", function(s)
-      if not s.group then return end
-      view.inst, view.wishOnly, view.slot, view.offset = s.group.instID, true, nil, 0
-      view.source = s.group.labyrinth and "delve" or (s.group.crafted and "crafted" or (s.group.raid and "raid" or "mplus"))
-      ns.LootUI_Refresh()
-    end)
-    b:SetScript("OnEnter", function(s)
-      local g = s.group
-      if not g then return end
-      GameTooltip:SetOwner(s, "ANCHOR_LEFT")
-      GameTooltip:AddLine(g.label, unpack(C.accent))
-      for _, x in ipairs(g.items) do
-        GameTooltip:AddDoubleLine((x.bis and "BiS  " or "") .. (x.e.name or ("item " .. x.e.id)),
-          (x.label or "") .. (x.ilvl and ("  " .. x.ilvl) or ""), 1, 1, 1, 0.8, 0.8, 0.8)
-      end
-      if view.plan == "bonus" then GameTooltip:AddLine("Spend a Nebulous Voidcore here.", unpack(C.gold)) end
-      GameTooltip:AddLine("Click to list them", unpack(C.dim))
-      GameTooltip:Show()
-    end)
-    b:SetScript("OnLeave", GameTooltip_Hide)
-    farmRows[i] = b
-  end
-  frame.farmEmpty = fs(side, 11, C.dim)
-  frame.farmEmpty:SetPoint("TOPLEFT", 0, -52 - 22 * #L.SLOTS)
-  frame.farmEmpty:SetWidth(W - SIDE_X - 20)
-  frame.farmEmpty:SetWordWrap(true)
-  end
-
+  -- two short lines inside the window's width rather than one long one that ran off the edge
   local foot = fs(frame, 11, C.dim)
   foot:SetPoint("BOTTOMLEFT", 14, 12)
+  foot:SetWidth(LIST_W - 20); foot:SetWordWrap(true); foot:SetJustifyH("LEFT")
   local gh = string.format("%02x%02x%02x", C.gold[1] * 255, C.gold[2] * 255, C.gold[3] * 255)
-  foot:SetText("Click or drag onto your wishlist  ·  Ctrl-click: preview  ·  Alt-click: BiS  ·  |cff" .. gh .. "BR|r bonus-rollable  ·  |cff" .. gh .. "EMB|r embellishment  ·  |cff" .. gh .. "TIER|r tier piece")
+  foot:SetText("Click or drag an item onto your wishlist  ·  Ctrl-click to preview  ·  Alt-click for BiS\n|cff" .. gh .. "BR|r bonus-rollable   |cff" .. gh .. "EMB|r embellishment   |cff" .. gh .. "TIER|r tier piece")
 
   dragIcon = CreateFrame("Frame", nil, UIParent)
   dragIcon:SetSize(30, 30)
@@ -1014,72 +1030,8 @@ function ns.LootUI_Refresh(scrollOnly)
     frame.scroll:Hide()
   end
 
-  if not SIDE then return end
-  -- wishlist
-  local wish = L.Wish()
-  for _, r in ipairs(slotRows) do
-    local key = r.slot.key
-    r.label:SetTextColor(unpack(view.slot == key and C.crystal or C.text))
-    local eq = L.Equipped(key)
-    for j, b in ipairs(r.eq) do
-      local e = eq[j]
-      b:SetShown(e ~= nil)
-      if e then
-        b.link = e.link
-        b.tex:SetTexture(e.icon or 136525)
-        b.tex:SetDesaturated(e.link == nil)
-        b.lv:SetText(e.ilvl or "")
-      end
-    end
-    local list = wish[key] or {}
-    for j, b in ipairs(r.wish) do
-      local e = list[j]
-      b.entry, b.index = e, j
-      b:SetShown(e ~= nil)
-      if not e then b.bis:Hide() end
-      if e then
-        b.tex:SetTexture(e.icon or C_Item.GetItemIconByID(e.id))
-        b.ring:SetShown(e.mode == "bonus")         -- gold underline = planning to bonus roll it
-        local lv = L.EntryTarget(e)
-        b.lv:SetText(lv or "")
-        local bis = L.IsBiS(e.id)
-        b.bis:SetShown(bis); b.star:SetShown(bis)
-      end
-    end
-    r.more:SetText(#list > #r.wish and ("+" .. (#list - #r.wish)) or "")
-    local ok, auto, have, need, planned = L.SlotState(key)
-    r.doneBar:SetShown(ok)
-    r.done.star:SetDesaturated(not ok)
-    r.done.star:SetAlpha(ok and 1 or (planned and 0.55 or 0.2))
-    r.done.txt:SetText(ok and "BiS" or (need > 1 and have > 0 and (have .. "/" .. need) or ""))
-    if ok then r.label:SetTextColor(unpack(C.gold)) end
-    r.hint:SetShown(#list == 0)
-  end
-
-  local emb = L.EmbCount()
-  frame.embCount:SetText(emb > 0 and (emb > 2 and ("EMB " .. emb .. "/2 – too many") or ("EMB " .. emb .. "/2")) or "")
-
-  -- plans
-  local plan = L.Plan(view.plan or "bonus")
-  frame.farmEmpty:SetShown(#plan == 0)
-  frame.farmEmpty:SetText(({
-    bonus = "Add bonus-rollable items (BR) to your wishlist to see where to spend bonus rolls.",
-    farm  = "Add items as drops to see which bosses and dungeons to farm.",
-    vault = "Items you add with VIA set to Great Vault appear here.",
-    craft = "Crafted gear and Labyrinth armaments on your wishlist appear here.",
-  })[view.plan or "bonus"])
-  for i, b in ipairs(farmRows) do
-    local g = plan[i]
-    b.group = g
-    b:SetShown(g ~= nil)
-    if g then
-      b.n:SetText(g.count)
-      b.star:SetShown(g.bis > 0)
-      b.t:SetText(g.label)
-      b.br:SetText(g.best and (((g.bestLabel or ""):match("^(%S+)") or "") .. " " .. g.best) or (g.crafted and "order" or ""))
-    end
-  end
 end
+
 
 -- open the loot list, optionally for one slot (opts.slot), instance (opts.inst) or source
 function ns.LootBrowse(opts)

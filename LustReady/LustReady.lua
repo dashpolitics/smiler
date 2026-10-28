@@ -35,6 +35,10 @@ local SOUNDS = {
   { "ready",  "Ready check",  kitName = "READY_CHECK" },
   { "alarm",  "Alarm",        kitName = "ALARM_CLOCK_WARNING_3" },
   { "epic",   "Epic loot",    kitName = "UI_EPICLOOT_TOAST" },
+  { "legend", "Legendary loot", kitName = "UI_LEGENDARY_LOOT_TOAST" },
+  { "alarm1", "Alarm 1",      kitName = "ALARM_CLOCK_WARNING_1" },
+  { "alarm2", "Alarm 2",      kitName = "ALARM_CLOCK_WARNING_2" },
+  { "pvp",    "PvP warning",  kitName = "PVP_WARNING" },
 }
 
 -- Crystal Ball palette (shared with the other Smiler add-ons)
@@ -160,6 +164,13 @@ end
 
 local function findSound(key)
   for _, sd in ipairs(SOUNDS) do if sd[1] == key then return sd end end
+  -- "own:<kit id>" or "own:<file path>": whatever you found and liked, kept as-is
+  local own = type(key) == "string" and key:match("^own:(.+)$")
+  if own then
+    local id = tonumber(own)
+    if id then return { "own", "sound " .. id, kit = id } end
+    return { "own", own:match("([^\\/]+)$") or own, file = own }
+  end
 end
 
 -- plays the chosen sound; if the game can't play it, falls back to the raid warning
@@ -264,11 +275,13 @@ end
 SLASH_LUSTREADY1, SLASH_LUSTREADY2 = "/lust", "/lustready"
 SlashCmdList.LUSTREADY = function(msg)
   local cmd = (msg or ""):lower():match("^%s*(%S*)")
+  -- the rest of the line keeps its case: a file path is case-sensitive on some systems
+  local rest = (msg or ""):match("^%s*%S*%s+(.*)$") or ""
   if cmd == "options" or cmd == "settings" or cmd == "config" then
     if Smiler and Smiler.OpenSettings then Smiler:OpenSettings("LustReady") else P("Settings need the Smiler add-on; use the commands below.") end
   elseif cmd == "" then
     status()
-    P("/lust test · pull · expire · anywhere · mine · sound · loud · nosound · move · scale <0.5-2> · reset")
+    P("/lust test · pull · expire · anywhere · mine · sound [n|id|file] · loud · nosound · move · scale <0.5-2> · reset")
   elseif cmd == "test" then
     Alert("Test – this is what a pull looks like")
   elseif cmd == "pull" then
@@ -282,13 +295,33 @@ SlashCmdList.LUSTREADY = function(msg)
     db.onlyMine = not db.onlyMine
     P(db.onlyMine and "Only alerting on characters that can cast lust." or "Alerting on every character.")
   elseif cmd == "sound" then
-    -- cycle through the sounds, playing each
-    local nextIdx = 1
-    for i, sd in ipairs(SOUNDS) do if sd[1] == db.soundKey then nextIdx = i % #SOUNDS + 1 end end
-    local sd = SOUNDS[nextIdx]
-    db.soundKey = sd[1]; db.sound = true
-    if playSound() then P("Sound: " .. sd[2])
-    else P("Sound: " .. sd[2] .. " – couldn't play it, so you'll hear the raid warning instead.") end
+    local pick = rest and rest:match("^%s*(.-)%s*$") or ""
+    if pick == "" then
+      -- no argument: list them, so picking one is a choice rather than a lucky cycle
+      P("Pull sound - /lust sound <number>, or /lust sound <sound ID or file path> for your own:")
+      for i, sd in ipairs(SOUNDS) do
+        P(("  %d. %s%s"):format(i, sd[2], db.soundKey == sd[1] and "   <- now" or ""))
+      end
+      local own = type(db.soundKey) == "string" and db.soundKey:match("^own:(.+)$")
+      if own then P("  your own: " .. own .. "   <- now") end
+      P("  Sound IDs come from wowhead.com/sounds; " .. CUSTOM_FILE .. " plays your own file.")
+      return
+    end
+    local n = tonumber(pick)
+    if n and SOUNDS[n] then
+      db.soundKey = SOUNDS[n][1]
+    elseif n or pick:find("%.") then
+      db.soundKey = "own:" .. pick                 -- a raw kit ID, or a path to an .ogg / .mp3
+    else
+      local found
+      for _, sd in ipairs(SOUNDS) do if sd[1] == pick:lower() then found = sd[1] end end
+      if not found then P("No sound called '" .. pick .. "'. /lust sound lists them."); return end
+      db.soundKey = found
+    end
+    db.sound = true
+    local sd = findSound(db.soundKey)
+    if playSound() then P("Sound: " .. (sd and sd[2] or db.soundKey))
+    else P("Sound: " .. (sd and sd[2] or db.soundKey) .. " - the game wouldn't play it, so you'll hear the raid warning instead.") end
   elseif cmd == "loud" then
     db.loud = (db.loud or 2) % 3 + 1
     P("Loudness: " .. ({ "normal", "loud (200%)", "very loud (300%)" })[db.loud]); playSound()

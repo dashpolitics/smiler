@@ -9,7 +9,10 @@ local MELEE_ICON = 132147 -- Interface\Icons\INV_Sword_04
 
 local deaths, known = {}, {}  -- deaths: { src="D"|"N"|"T", ref=..., addedAt=GetTime() }
 local selected, listOffset, rowOffset, follow = nil, 0, 0, true
-local mode = "time"   -- "time": hit by hit, oldest first · "hits": by ability, biggest single hit first
+-- "why" is the default: the verdict and the handful of hits that decided it, in a window small
+-- enough to leave open. "time" is the full hit-by-hit, "hits" groups by ability, "fight" lists the
+-- whole pull. Reading a death should not need a full-screen window.
+local mode = "why"
 local win
 
 ---------------------------------------------------------------- secret-tolerant helpers
@@ -399,6 +402,41 @@ end
 
 local refresh, layout
 local listRows, detailRows = {}, {}
+local sparkBars = {}
+
+-- one thin bar per logged event, tallest at full health: the shape tells you in one glance whether
+-- this was a slide or a cliff
+local function drawSpark(parent, events, kb)
+  local n = 0
+  local list = {}
+  for _, e in ipairs(events or {}) do
+    if e.kind == "dmg" and type(e.hp) == "number" and not isSecret(e.hp) then list[#list + 1] = e end
+  end
+  if #list == 0 then
+    for i = 1, #sparkBars do sparkBars[i]:Hide() end
+    return false                      -- nothing with a readable health value: no strip to draw
+  end
+  local w = parent:GetWidth()
+  local slots = math.min(#list, 48)
+  local first = math.max(1, #list - slots + 1)
+  local bw = math.max(2, math.floor((w - 4) / slots) - 1)
+  for i = 1, slots do
+    local e = list[first + i - 1]
+    local b = sparkBars[i]
+    if not b then b = tex(parent, T.amethyst, 1, "ARTWORK"); sparkBars[i] = b end
+    local hp = math.max(0, math.min(1, e.hp or 0))
+    local h = math.max(2, math.floor(hp * (parent:GetHeight() - 2)))
+    b:ClearAllPoints()
+    b:SetSize(bw, h)
+    b:SetPoint("BOTTOMLEFT", parent, "BOTTOMLEFT", 2 + (i - 1) * (bw + 1), 0)
+    local c = (e == kb and T.ruby) or (hp < 0.3 and T.ruby) or (hp < 0.6 and T.topaz) or T.emerald
+    b:SetColorTexture(c[1], c[2], c[3], e == kb and 1 or 0.8)
+    b:Show()
+    n = i
+  end
+  for i = n + 1, #sparkBars do sparkBars[i]:Hide() end
+  return n > 0
+end
 
 local function savePos()
   if not (win and DiedToDB) then return end
@@ -499,10 +537,12 @@ local function build()
     if selected and selected < #deaths then selected = selected + 1; follow = (selected == #deaths); rowOffset = 0; refresh() end
   end)
   nxt:SetPoint("LEFT", win.count, "RIGHT", 2, 0)
+  win.modeWhy = textButton(bar, "why", function() mode = "why"; rowOffset = 0; refresh() end)
   win.modeTime = textButton(bar, "time", function() mode = "time"; rowOffset = 0; refresh() end)
   win.modeHits = textButton(bar, "hits", function() mode = "hits"; rowOffset = 0; refresh() end)
   win.modeFight = textButton(bar, "fight", function() mode = "fight"; rowOffset = 0; refresh() end)
-  win.modeTime:SetPoint("LEFT", nxt, "RIGHT", 8, 0)
+  win.modeWhy:SetPoint("LEFT", nxt, "RIGHT", 8, 0)
+  win.modeTime:SetPoint("LEFT", win.modeWhy, "RIGHT", 4, 0)
   win.modeHits:SetPoint("LEFT", win.modeTime, "RIGHT", 4, 0)
   win.modeFight:SetPoint("LEFT", win.modeHits, "RIGHT", 4, 0)
   local close = textButton(bar, "x", function() win:Hide() end); close:SetPoint("RIGHT", -2, 0)
@@ -517,6 +557,11 @@ local function build()
   win.h2 = fs(win, -1, T.fg)
   win.h3 = fs(win, -1, T.muted)
   win.more = fs(win, -2, T.muted)
+
+  -- the health-fall strip, only drawn in the verdict view
+  win.spark = CreateFrame("Frame", nil, win)
+  win.spark:SetHeight(26)
+  win.sparkLabel = fs(win, -2, T.muted)
 
   -- resize grip
   local grip = CreateFrame("Button", nil, win)
@@ -577,8 +622,10 @@ layout = function()
   win.h2:ClearAllPoints(); win.h2:SetPoint("TOPLEFT", x0, -TITLE_H - 19); win.h2:SetWidth(rw)
   win.h3:ClearAllPoints(); win.h3:SetPoint("TOPLEFT", x0, -TITLE_H - 35); win.h3:SetWidth(rw); win.h3:Hide()
   win.more:ClearAllPoints(); win.more:SetPoint("BOTTOMLEFT", x0, 3); win.more:SetWidth(rw - 14)
+  win.spark:ClearAllPoints(); win.spark:SetPoint("TOPLEFT", x0, -TITLE_H - 52); win.spark:SetWidth(rw)
+  win.sparkLabel:ClearAllPoints(); win.sparkLabel:SetPoint("TOPLEFT", x0, -TITLE_H - 80)
 
-  local top = TITLE_H + HEAD_H + 4
+  local top = TITLE_H + HEAD_H + 4 + ((mode == "why") and 56 or 0)
   local nRows = math.max(1, math.floor((h - top - 14) / (ROW_H + 1)))
   local srcW = rw >= 360 and math.floor(rw * 0.26) or 1   -- source column only when there's room
   for i = 1, math.max(nRows, #detailRows) do
@@ -611,6 +658,7 @@ refresh = function()
   win.modeTime.fs:SetTextColor(unpack(mode == "time" and onC or offC))
   win.modeHits.fs:SetTextColor(unpack(mode == "hits" and onC or offC))
   win.modeFight.fs:SetTextColor(unpack(mode == "fight" and onC or offC))
+  win.modeWhy.fs:SetTextColor(unpack(mode == "why" and onC or offC))
   if selected and selected > #deaths then selected = #deaths end
   if not selected and #deaths > 0 then selected = #deaths end
   if follow then listOffset = math.max(0, #deaths - win.nList) end
@@ -636,6 +684,7 @@ refresh = function()
 
   for i = 1, #detailRows do detailRows[i]:Hide(); detailRows[i].e = nil; detailRows[i].deathIndex = nil; detailRows[i].flag:Hide() end
   win.more:SetText("")
+  if win.spark and mode ~= "why" then win.spark:Hide(); win.sparkLabel:Hide() end
   if mode == "fight" then
     local list = ns.fightDeaths and ns.fightDeaths() or {}
     local fight = ns.fight
@@ -714,6 +763,51 @@ refresh = function()
       kb and kb.source and "  ·  " or "", kb and kb.source or "", when and ("  ·  " .. when .. " into the fight") or ""))
   else
     win.h2:SetText(""); win.h3:SetText("")
+  end
+
+  if mode == "why" then
+    -- the verdict: what killed them, in one coloured line, with the hits that actually decided it
+    local causeTxt, kind = causeOf(d, info)
+    if causeTxt then
+      local cc = (kind == "avoid" or kind == "oneshot") and C.ruby or kind == "kick" and C.sapphire
+        or kind == "burst" and C.topaz or C.fg
+      setText(win.h2, cat(cc, causeTxt, "|r"))
+    elseif info.hidden then
+      win.h2:SetText(C.amethyst .. "Values hidden until the pull or key ends|r")
+    else
+      win.h2:SetText("")
+    end
+    local shown = (not info.hidden) and drawSpark(win.spark, d.events, kb) or false
+    win.spark:SetShown(shown)
+    win.sparkLabel:SetShown(shown)
+    if shown then
+      win.sparkLabel:SetText(C.muted .. "health, one bar per hit  ·  the last bar is the killing blow|r")
+    end
+    if info.hidden or not info.byMax then
+      win.more:SetText("The rest fills in once the pull or key ends.")
+      return
+    end
+    -- the three biggest single hits, each with its share of the damage taken
+    local keys = info.byMax
+    local n = math.min(3, win.nRows, #keys)
+    for i = 1, n do
+      local b = info.by[keys[i]]
+      local r = detailRows[i]
+      r.e = b.maxE or b.e
+      r.mark:SetShown(kb and b.e.id == kb.id)
+      r.time:SetText(b.n > 1 and ("x" .. b.n) or "")
+      r.pct:SetText("")
+      local share = (info.total and info.total > 0) and (b.amount / info.total) or 0
+      r.hp:Show(); pcall(r.hp.SetValue, r.hp, share)
+      r.hp:SetStatusBarColor(T.topaz[1], T.topaz[2], T.topaz[3])
+      pcall(r.icon.SetTexture, r.icon, iconOf(b.e))
+      setText(r.spell, cat(spellNameOf(b.e), avoid(b.e)))
+      setText(r.amount, cat(C.topaz, short(b.max), "|r"))
+      setText(r.src, cat(C.muted, math.floor(share * 100 + 0.5), "% of the damage|r"))
+      r:Show()
+    end
+    win.more:SetText(#keys > n and (C.muted .. "the biggest hits  ·  'time' for every hit, 'hits' for every ability|r") or "")
+    return
   end
 
   if mode == "hits" then

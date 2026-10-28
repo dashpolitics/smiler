@@ -235,8 +235,35 @@ local function groupKeys()
   return set
 end
 
--- Everyone you've synced with stays (friend or not) until the usual age purge; /sk forget <name> drops one
-function ns.PruneStrangers() end
+-- People you know (friends, Battle.net friends, guildmates, your own characters) stay for good.
+-- Someone you only met in a group is kept while you are grouped with them and dropped once you are
+-- not: the grid is for people you actually play with, not everyone you have ever been in a key with.
+-- /sk forget <name> removes one by hand.
+-- "yours for good": your own characters, people on your friends list, Battle.net friends and
+-- guildmates. Someone whose data merely reached you relayed through a friend is not one of those.
+local KEEP_SRC = { self = true, guild = true, friend = true, bnet = true }
+function ns.KeepForever(p)
+  if not p then return false end
+  if p.key == ns.selfKey or p.test then return true end
+  if KEEP_SRC[p.src] then return true end
+  if not ns.social or GetTime() - ns.social.t > 20 then ns.BuildSocial() end
+  if ns.social.names[p.key] or ns.db.settings.acct[p.key] then return true end
+  return (p.acct and ns.social.tags[p.acct:lower()]) and true or false
+end
+
+function ns.PruneStrangers()
+  if not ns.db or not ns.db.players then return end
+  local group = groupKeys()
+  local gone = 0
+  for key, p in pairs(ns.db.players) do
+    if key ~= ns.selfKey and not p.test and not group[key] and not ns.KeepForever(p) then
+      ns.db.players[key] = nil
+      gone = gone + 1
+    end
+  end
+  if gone > 0 and ns.db.settings.debug then ns.Print(("Dropped %d player%s you only met in a group."):format(gone, gone == 1 and "" or "s")) end
+  return gone
+end
 
 ---------------------------------------------------------------- accounts
 local function tagName(tag) return tag and (tag:match("^([^#]+)") or tag) end

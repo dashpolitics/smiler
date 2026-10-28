@@ -7,8 +7,8 @@ local _, ns = ...
 local L = ns.Loot
 local T = ns.T
 
-local W, H = 1000, 620
-local ROW_H, PICK_W, SIDE_W = 44, 196, 300
+local W, H = 1020, 700
+local ROW_H, PICK_W, SIDE_W = 40, 196, 300
 local TOP = 92
 
 local win, rows, sideRows = nil, {}, {}
@@ -25,40 +25,61 @@ end
 local function qeText(q) return q and string.format("%+.1f%%", q) or "" end
 
 ---------------------------------------------------------------- picking an item
--- the menu of everything that would be an upgrade in this slot
+-- the menu of everything you could put in this slot: what you already picked, the upgrades, then the rest
 local function pickMenu(owner, slotKey, kind)
   local cands = L.SlotCandidates(slotKey)
-  if #cands == 0 then ns.Print("Nothing in " .. L.slotByKey[slotKey].label .. " would be an upgrade right now.") return end
-  local function choose(c) L.SetTarget(slotKey, kind, c.it); refresh() end
-  if MenuUtil and MenuUtil.CreateContextMenu then
-    MenuUtil.CreateContextMenu(owner, function(_, root)
-      root:CreateTitle(L.PICK_LABEL[kind] .. "  ·  " .. L.slotByKey[slotKey].label)
-      local nNow, nLater = 0, 0
-      for _, c in ipairs(cands) do if c.now then nNow = nNow + 1 else nLater = nLater + 1 end end
-      local function section(title, want)
-        local first = true
-        for _, c in ipairs(cands) do
-          if c.now == want then
-            if first then root:CreateTitle(title); first = false end
-            local tag = {}
-            if c.qe then tag[#tag + 1] = qeText(c.qe) end
-            if c.max then tag[#tag + 1] = c.max end
-            if c.kind then tag[#tag + 1] = L.PICK_LABEL[c.kind]:lower() end
-            root:CreateButton(shortName(c.it.name, 34) .. "  |cff8f7fb8" .. table.concat(tag, " · ") .. "|r", function() choose(c) end)
-          end
-        end
-      end
-      if nNow > 0 then section("Can get now", true) end
-      if nLater > 0 then section("Not yet (Mythic past your farm)", false) end
-      local p = L.SlotPicks(slotKey)
-      if (kind == "alt" and #p.alts > 0) or p[kind] then
-        root:CreateDivider()
-        root:CreateButton("Clear", function() L.ClearTarget(slotKey, kind); refresh() end)
-      end
-    end)
-  else
-    choose(cands[1])
+  if #cands == 0 then
+    ns.Print("No loot known for " .. L.slotByKey[slotKey].label .. " yet - open the gear guide (/sk loot) so it can scan.")
+    return
   end
+  local function choose(c) L.SetTarget(slotKey, kind, c.it); refresh() end
+  local function label(c)
+    local tag = {}
+    if c.qe then tag[#tag + 1] = qeText(c.qe) end
+    if c.max then tag[#tag + 1] = tostring(c.max) end
+    if c.nowLv and c.max and c.nowLv < c.max then tag[#tag + 1] = c.nowLv .. " now" end
+    if c.owned then tag[#tag + 1] = "have " .. c.owned end
+    if c.gain and c.gain ~= 0 then tag[#tag + 1] = (c.gain > 0 and "+" or "") .. c.gain end
+    if c.kind then tag[#tag + 1] = L.PICK_LABEL[c.kind]:lower() end
+    local name = shortName(c.it.name or ("item " .. c.id), 34)
+    if not c.up then name = "|cff9a8fb0" .. name .. "|r" end
+    return name .. (#tag > 0 and ("  |cff8f7fb8" .. table.concat(tag, " · ") .. "|r") or "")
+  end
+  if not (MenuUtil and MenuUtil.CreateContextMenu) then choose(cands[1]); return end
+  MenuUtil.CreateContextMenu(owner, function(_, root)
+    root:CreateTitle(L.PICK_LABEL[kind] .. "  ·  " .. L.slotByKey[slotKey].label)
+    local wished, upNow, upLater, have, rest = {}, {}, {}, {}, {}
+    for _, c in ipairs(cands) do
+      if c.wished or c.kind then wished[#wished + 1] = c
+      elseif c.have then have[#have + 1] = c
+      elseif c.up and c.now then upNow[#upNow + 1] = c
+      elseif c.up then upLater[#upLater + 1] = c
+      else rest[#rest + 1] = c end
+    end
+    local function section(title, list, into)
+      if #list == 0 then return end
+      local parent = into or root
+      parent:CreateTitle(title)
+      for _, c in ipairs(list) do parent:CreateButton(label(c), function() choose(c) end) end
+    end
+    section("On your wishlist", wished)
+    section("Upgrades you can get now", upNow)
+    section("Upgrades, needs Mythic progress", upLater)
+    section("Already at its best in your bags", have)
+    if #rest > 0 then
+      -- everything else lives in a submenu so the list stays usable; sidegrades and downgrades included
+      local sub = root:CreateButton("Everything else in this slot  (" .. #rest .. ")")
+      local nowList, laterList = {}, {}
+      for _, c in ipairs(rest) do if c.now then nowList[#nowList + 1] = c else laterList[#laterList + 1] = c end end
+      section("Can get now", nowList, sub)
+      section("Not yet", laterList, sub)
+    end
+    local p = L.SlotPicks(slotKey)
+    if (kind == "alt" and #p.alts > 0) or p[kind] then
+      root:CreateDivider()
+      root:CreateButton("Clear", function() L.ClearTarget(slotKey, kind); refresh() end)
+    end
+  end)
 end
 
 -- right-click an existing pick: move it between the three roles, or drop it
@@ -112,9 +133,12 @@ local function setPick(b, slotKey, kind, id, extra)
     local q = L.QEScores and L.QEScores()
     q = (q and q.scores) or {}
     if q[id] then bits[#bits + 1] = qeText(q[id]) end
-    local max = L.MaxIlvl(it)
-    if max then bits[#bits + 1] = max end
-    if not L.Achievable(it) then bits[#bits + 1] = "|cffffab00not yet|r" end
+    local nowLv, max = L.Reach(it)
+    local owned = L.OwnedLevel(id)
+    if max then bits[#bits + 1] = tostring(max) end
+    if owned and max and owned >= max then bits[#bits + 1] = "|cff00e676have it|r"
+    elseif nowLv and max and nowLv < max then bits[#bits + 1] = "|cffffab00" .. nowLv .. " until Mythic|r"
+    elseif not nowLv then bits[#bits + 1] = "|cffffab00not yet|r" end
     local pr = L.Prio(id)
     if pr then bits[#bits + 1] = "P" .. pr end
     b.sub:SetText(table.concat(bits, " · "))
@@ -224,8 +248,12 @@ local function build()
   win.profile:SetPoint("TOPLEFT", 16, -42)
   win.plan = T.Button(win, "Where to go", 110, 22, function() if ns.PlannerOpen then ns.PlannerOpen() end end)
   win.plan:SetPoint("LEFT", win.profile, "RIGHT", 12, 0)
-  win.help = T.Text(win, "body", 11, "muted"); win.help:SetPoint("LEFT", win.plan, "RIGHT", 14, 0)
-  win.help:SetText("Click a box to pick · right-click one to move it between target / BiS / alternative")
+  -- pinned on both sides so the line wraps inside the window instead of running off its right edge
+  win.help = T.Text(win, "body", 11, "muted")
+  win.help:SetPoint("LEFT", win.plan, "RIGHT", 14, 0)
+  win.help:SetPoint("RIGHT", win, "RIGHT", -16, 0)
+  win.help:SetJustifyH("LEFT"); win.help:SetWordWrap(true)
+  win.help:SetText("Click a box to pick from everything in that slot  ·  right-click to move it between target / BiS / alternative")
 
   -- column headings
   local function head(text, x, color)
@@ -233,7 +261,7 @@ local function build()
   end
   head("SLOT", 16)
   head("TARGET  ·  can get now", 16 + 88, "emerald")
-  head("BIS  ·  working towards", 16 + 88 + PICK_W + 6, "topaz")
+  head("BIS  ·  working towards (M = needs Mythic)", 16 + 88 + PICK_W + 6, "topaz")
   head("ALTERNATIVES", 16 + 88 + (PICK_W + 6) * 2)
 
   win.list = CreateFrame("Frame", nil, win)
@@ -267,7 +295,7 @@ end
 function ns.Targets_Refresh()
   if not win or not win:IsShown() then return end
   if win.profile and win.profile.Sync then win.profile:Sync() end
-  local slots = L.SlotsWithUpgrades()
+  local slots = L.TargetRows()
   local y = 0
   local used = 0
   for i, s in ipairs(slots) do
@@ -289,8 +317,12 @@ function ns.Targets_Refresh()
     y = y + ROW_H + 1
   end
   for i = used + 1, #rows do rows[i]:Hide() end
-  win.empty:SetText(used == 0 and "No upgrades found for this character yet. Open the gear guide (/sk loot) and scan, or lower the profile to Heroic." or "")
-  win.sub:SetText(used .. (used == 1 and " slot" or " slots") .. " with an upgrade available")
+  local nUp = 0
+  for _, s2 in ipairs(slots) do
+    for _, c in ipairs(s2.cands) do if c.up then nUp = nUp + 1 break end end
+  end
+  win.empty:SetText(used == 0 and "No loot tables scanned yet - open the gear guide (/sk loot) so it can read the Adventure Journal." or "")
+  win.sub:SetText(nUp .. (nUp == 1 and " slot has" or " slots have") .. " an upgrade in it  ·  every slot is listed, pick anything you like")
 
   -- the order list
   local list = L.TargetList()
@@ -306,7 +338,8 @@ function ns.Targets_Refresh()
     r.name:SetText("|cff" .. T.Hex(kindC) .. "·|r " .. shortName(e.it.name, 24))
     local bits = {}
     if e.qe then bits[#bits + 1] = qeText(e.qe) end
-    if not e.now then bits[#bits + 1] = "|cffffab00!|r" end
+    if e.owned and e.max and e.owned >= e.max then bits[#bits + 1] = "|cff00e676✓|r"
+    elseif not e.now then bits[#bits + 1] = "|cffffab00M|r" end
     r.tag:SetText(table.concat(bits, " "))
     r:Show()
     sy = sy + 27

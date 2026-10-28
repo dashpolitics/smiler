@@ -3,7 +3,7 @@
 local ADDON, S = ...
 Smiler = S
 
-S.VERSION = "1.4.0"
+S.VERSION = "1.6.0"
 
 ---------------------------------------------------------------- Crystal Ball palette
 -- One meaning per gem colour, and each one always comes with a shape or a word.
@@ -258,6 +258,7 @@ SlashCmdList.SMILER = function(msg)
   local cmd = (msg or ""):lower():match("^%s*(%S*)")
   if cmd == "" then S:OpenSettings()
   elseif cmd == "menu" then S:ToggleMenu()
+  elseif cmd == "minimap" then S.ToggleMinimap()
   elseif cmd == "move" then S:UnlockToasts()
   elseif cmd == "test" then S:TestToasts()
   else

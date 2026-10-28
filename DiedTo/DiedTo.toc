@@ -2,7 +2,7 @@
 ## Title: DiedTo
 ## Notes: Death window: what killed each group member and the hits leading up to it. Optional chat output.
 ## Author: Tom Miller
-## Version: 0.10.0
+## Version: 0.11.0
 ## OptionalDeps: Details, Smiler
 ## SavedVariables: DiedToDB
 

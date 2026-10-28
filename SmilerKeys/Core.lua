@@ -131,7 +131,21 @@ function ns.ADDON_LOADED(name)
   SmilerKeysDB.players  = SmilerKeysDB.players or {}
   SmilerKeysDB.settings = SmilerKeysDB.settings or {}
   copyDefaults(SmilerKeysDB.settings, DEFAULTS)
+  SmilerKeysDB.settings.chars = SmilerKeysDB.settings.chars or {}
   ns.db = SmilerKeysDB
+end
+
+-- Settings that belong to one character rather than the whole account: the Where to go plan, this
+-- week's boss map, which spec and difficulty you are ticking bonus rolls off on. These all used to
+-- live in the single account-wide settings table, so Knols' plan turned up on Bearbacker. Window
+-- positions, channels and the look of things stay account-wide, which is what you want there.
+function ns.CharSettings()
+  local s = ns.db and ns.db.settings
+  if not s then return {} end
+  s.chars = s.chars or {}
+  local k = ns.selfKey or "?"
+  s.chars[k] = s.chars[k] or {}
+  return s.chars[k]
 end
 
 function ns.PLAYER_LOGIN()
@@ -255,7 +269,10 @@ local HELP = {
   "/sk glow  – toggle upgrade glow (hovering a key always shows who it upgrades)",
   "/sk tp <column> <spellID|clear>  – set the teleport for a dungeon column by hand",
   "/sk abbr <column> <text>  – rename a dungeon column (e.g. /sk abbr 3 ARAK)",
+  "/sk rolls  – a button per boss (Heroic/Mythic) and dungeon: hover for what a bonus roll can still give you",
+  "/sk void [name|raw <id>]  – what a bonus roll can still give you, per boss and dungeon",
   "/sk targets  – one row per slot: your target, your BiS and alternatives, in your own order",
+  "/sk why <item name or id>  – why an item is, or is not, in Where to go",
   "/sk unhide  – show players you hid",
   "/sk forget <name>  – drop one person · /sk clear – forget everyone except you",
   "/sk test  – toggle fake players for layout testing",
@@ -277,6 +294,12 @@ SlashCmdList.SMILERKEYS = function(msg)
     ns.PlannerOpen()
   elseif cmd == "targets" or cmd == "target" then
     ns.TargetsOpen()
+  elseif cmd == "why" then
+    ns.WhyReport(rest)
+  elseif cmd == "void" or cmd == "voidcache" then
+    ns.VoidcacheReport(rest)
+  elseif cmd == "rolls" or cmd == "roll" then
+    ns.RollsOpen()
   elseif cmd == "browse" then
     ns.LootBrowse({})
   elseif cmd == "import" then

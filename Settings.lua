@@ -49,6 +49,12 @@ local function buildGeneral(body)
   holder.Sync = function() moveBtn:SetLabel(S.ToastsUnlocked() and "Done" or "Move") end
   tinsert(body.smilerSync, holder)
   left:Buttons("Try them", { { "Test alerts", function() S:TestToasts() end, nil, 110 } })
+  left:Gap(6)
+  left:Section("Minimap")
+  left:Note("One button on the minimap opens this menu. Drag it round the ring to move it.", "muted", 12)
+  left:Switch("Minimap button", "Click it for your add-ons, right-click for settings",
+    function() return S.MinimapShown and S.MinimapShown() end,
+    function(v) if S.SetMinimapShown then S.SetMinimapShown(v) end end)
 
   local right = W.Column(body, 340, 0, 290)
   right:Section("Add-ons")

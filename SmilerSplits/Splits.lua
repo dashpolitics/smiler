@@ -107,6 +107,21 @@ local function deaths()
 end
 
 ---------------------------------------------------------------- recorded runs
+-- the character this client is on, to tell your own runs from an alt's
+local function meKey()
+  if not UnitFullName then return nil end
+  local ok, n = pcall(UnitFullName, "player")
+  return ok and n or nil
+end
+ns.MeKey = meKey
+
+-- "Bearbacker" when a run came from another character, nil when it is this one's
+function ns.RunOwner(r)
+  if not r or not r.char then return nil end
+  if r.char == meKey() then return nil end
+  return r.char
+end
+
 local function runsFor(mapID)
   db.runs[mapID] = db.runs[mapID] or {}
   return db.runs[mapID]
@@ -173,8 +188,13 @@ local refreshWindow, showWindow, hideWindow
 
 local function newRun(mapID, level, affixes)
   local name, limit = mapInfo(mapID)
+  local who, realm, cls
+  if UnitFullName then local ok, a, b = pcall(UnitFullName, "player"); if ok then who, realm = a, b end end
+  if UnitClass then local ok, _, c = pcall(UnitClass, "player"); if ok then cls = c end end
   return { mapID = mapID, level = level or 0, affixes = affixes, name = name or ("Dungeon " .. mapID),
-           timeLimit = limit or 1800, started = time(), splits = {}, forces = {} }
+           timeLimit = limit or 1800, started = time(), splits = {}, forces = {},
+           -- whose run this was: the store is shared by every character on the account
+           char = who, realm = realm, class = cls }
 end
 
 local function beginRun()
@@ -440,7 +460,10 @@ function refreshWindow()
 
   win.title:SetText(string.format("+%d  %s", run.level or 0, (run.name or ""):upper()))
   if ref then
-    win.vs:SetText(string.format("vs your +%d · %s · %s", ref.level,
+    -- say whose run you are being measured against: the store is shared across your characters,
+    -- so the best run here is often an alt's
+    local owner = ns.RunOwner(ref)
+    win.vs:SetText(string.format("vs %s +%d · %s · %s", owner and (owner .. "'s") or "your", ref.level,
       ref.timed and (clock(ref.remaining) .. " left") or (clock(-(ref.remaining or 0)) .. " over"), date("%d %b", ref.date or 0)))
   elseif ns.season and cur then
     win.vs:SetText(string.format("No splits yet · season best +%d in %s", ns.season.level, clock(ns.season.time)))

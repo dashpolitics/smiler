@@ -586,7 +586,10 @@ local function BuildInto(body, Wd)
   win = holder   -- RefreshOptions checks win:IsShown()
   holder:SetScript("OnShow", function() ns.RefreshOptions() end)
   return { note = "Changes save as you make them. /rewound still works.",
-           footer = { { "Test toast", function() ns.TestToast() end, "primary", 110 } } }
+           footer = {
+             { "Boss bests", function() if ns.Extra and ns.Extra.Open then ns.Extra.Open() end end, nil, 110 },
+             { "Test toast", function() ns.TestToast() end, "primary", 110 },
+           } }
 end
 
 if Smiler and Smiler.RegisterSettings then

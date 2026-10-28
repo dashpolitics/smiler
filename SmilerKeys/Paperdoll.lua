@@ -443,7 +443,7 @@ local function build()
   panel.planDiv = panel:CreateTexture(nil, "ARTWORK"); panel.planDiv:SetColorTexture(T.RGB("edge", 0.25)); panel.planDiv:SetWidth(1)
   panel.seg = T.Button(panel, "Open planner", 120, 24, function() if ns.PlannerOpen then ns.PlannerOpen() end end, "primary")
   panel.targets = T.Button(panel, "Targets", 80, 24, function() if ns.TargetsOpen then ns.TargetsOpen() end end)
-  panel.targets:SetPoint("LEFT", panel.seg, "RIGHT", 6, 0)
+  panel.targets:SetPoint("RIGHT", panel.seg, "LEFT", -6, 0)
   panel.targets:HookScript("OnEnter", function(s)
     GameTooltip:SetOwner(s, "ANCHOR_TOP"); GameTooltip:AddLine("Targets", T.RGB("amethyst"))
     GameTooltip:AddLine("One row per slot with an upgrade in it: the target you can get now, the BiS you are working towards, and alternatives. Drag them into your own order and the planner follows.", 1, 1, 1, true)
@@ -609,15 +609,14 @@ function ns.Paperdoll_Refresh()
 end
 
 ---------------------------------------------------------------- follow the character sheet
-local ev = CreateFrame("Frame")
-ev:RegisterEvent("PLAYER_LOGIN")
-ev:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
-ev:SetScript("OnEvent", function(_, e)
-  if e == "PLAYER_EQUIPMENT_CHANGED" then
-    if panel and panel:IsShown() then ns.Debounce("pd-eq", 0.3, ns.Paperdoll_Refresh) end
-    return
-  end
-  if not CharacterFrame then return end
+-- The character sheet is loaded on demand, so at PLAYER_LOGIN CharacterFrame often does not exist
+-- yet. Hooking only at login therefore did nothing, and the panel stayed dead until the setting was
+-- toggled off and on again (which rebuilt it by another path). Hook as soon as the frame appears,
+-- whenever that is, and only once.
+local hooked = false
+local function hookSheet()
+  if hooked or not CharacterFrame then return hooked end
+  hooked = true
   CharacterFrame:HookScript("OnShow", function()
     if ns.db.settings.lootWithChar ~= false and not ns.db.settings.lootPanelClosed then
       ns.Paperdoll_Show()
@@ -636,4 +635,33 @@ ev:SetScript("OnEvent", function(_, e)
     if panel then panel:Hide() end
     if tab then tab:Hide() end
   end)
+  -- the sheet may already be open when we get here
+  if CharacterFrame:IsShown() and ns.db.settings.lootWithChar ~= false and not ns.db.settings.lootPanelClosed then
+    ns.Paperdoll_Show()
+  end
+  return true
+end
+ns.Paperdoll_Hook = hookSheet
+
+local ev = CreateFrame("Frame")
+ev:RegisterEvent("PLAYER_LOGIN")
+ev:RegisterEvent("PLAYER_ENTERING_WORLD")
+ev:RegisterEvent("ADDON_LOADED")
+ev:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
+ev:SetScript("OnEvent", function(self, e, arg)
+  if e == "PLAYER_EQUIPMENT_CHANGED" then
+    if panel and panel:IsShown() then ns.Debounce("pd-eq", 0.3, ns.Paperdoll_Refresh) end
+    return
+  end
+  if hookSheet() then
+    self:UnregisterEvent("ADDON_LOADED")
+    return
+  end
+  -- not there yet: ask for it and keep looking for a little while
+  if e == "PLAYER_LOGIN" or e == "PLAYER_ENTERING_WORLD" then
+    if C_AddOns and C_AddOns.LoadAddOn then pcall(C_AddOns.LoadAddOn, "Blizzard_CharacterUI") end
+    for _, delay in ipairs({ 1, 3, 8 }) do
+      C_Timer.After(delay, function() if hookSheet() then ev:UnregisterEvent("ADDON_LOADED") end end)
+    end
+  end
 end)

@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.6.0
+
+**Where to go, rebuilt.** The week map at the top is now a grid: four rows, one per raid difficulty, against this season's ten bosses, with the eight Mythic+ dungeons on their own strip below and a Delves switch beside them. Each row is named and each cell carries a shape as well as a colour (`*` rolled, `x` killed, blank open, `-` no loot on that difficulty), so it reads the same without colour. The number in a cell is how many items you want from that boss **at that difficulty**; hover for the list, with what a kill and a bonus roll each give. Left-click a cell to cycle open > rolled > killed, right-click to clear, or click a difficulty's name to set or clear the whole row.
+
+**Difficulties are no longer muddled.**
+
+- This week's status was stored per boss with no difficulty at all, so marking Heroic Ula'tek killed also marked it on LFR, Normal and Mythic. Status is now per boss *and* difficulty, and a recorded bonus roll only counts on the difficulty it happened on.
+- A boss's difficulty in the plan was worked out separately from the route actually chosen, so a boss whose best open route was Heroic could be labelled, pooled and tick-checked as Mythic. The route now decides, and Heroic Ula'tek and Mythic Ula'tek are separate entries - they are separate lockouts and separate roll pools.
+- The last two bosses drop higher on Mythic (Myth 9/6). Bonus rolls knew this; kills did not, so a Mythic kill looked like 324 against a Heroic bonus roll's 334 and the plan quietly preferred Heroic for a Mythic-only item.
+- Lair bosses have their own Mythic farm switches, on the Mythic+ line. They are not in the raid's kill order, so the single farm count could never speak for them.
+
+**Upgrades are judged by where an item ends up, not where it drops.** A Heroic bonus roll that lands at 318 and crests to 334 beats the 321 you are wearing; the planner was comparing the drop level and throwing it away. A second rule parked anything already on the same gear track - "the rest is crests" - which discarded a Mythic roll at 334 because you wore myth-track 321. Both gone.
+
+**Your targets board now reaches the planner.** The BiS scope only looked at BiS stars, so a slot's *target* - the one you can realistically get now - never entered the plan at all. It is now called **Targets** and covers your target, BiS and alternatives. A pick marked **BiS** is only planned at its best version, since routing you to a Heroic copy of your Mythic BiS is what the target is for.
+
+**Nothing vanishes silently.** Items the plan leaves out appear under **NOT IN THE PLAN**, priority first, each with the reason: what you have, what would beat it, and what is stopping you. `/sk why <item>` prints the whole chain in chat - scope, slot, every route with why it was allowed or rejected, and the gate the item fell out of.
+
+**Everything else**
+
+- SmilerKeys: settings that belong to one character - the Where to go plan, this week's boss map, the roll checklist's spec and difficulty - are per character now instead of shared across the account. Your existing tuning carries over to each character the first time it opens.
+- SmilerKeys: **bonus roll checklist** (`/sk rolls`). The loot table per boss and dungeon, per spec and per difficulty, ticked off by hand; owning an item does not remove it, and a complete table resets.
+- SmilerKeys: transmog is no longer offered as gear. Cosmetic pieces share an equip slot with real armour, so the journal's filter had them competing as upgrades.
+- SmilerKeys: loot list tidied - an Upgrades filter, a GAIN column, one item-level control in place of three, and plain-English help. The ILVL, GAIN and TAG headers used to sit on top of each other.
+- SmilerKeys: the people grid drops strangers when they leave your group; friends, guildies and Battle.net contacts stay.
+- SmilerKeys: the wishlist beside the character sheet appears without toggling the setting off and on.
+- Smiler: minimap button (`/smiler minimap`) - click for the add-on menu, right-click for settings, drag it round the ring. The menu scrolls and is capped to your screen height.
+- DiedTo: the death window leads with the cause and the hits behind it, with a health-fall strip.
+- Rewound: Boss bests opens from the Smiler menu, the difficulty tabs show counts, and an empty tab says which difficulties do have records.
+- SmilerSplits: your alts' keys count too - a run is labelled with the character who holds it.
+- LustReady: `/lust sound` lists the sounds by number, and `/lust sound <id|file>` takes any sound kit or file of your own.
+- SmilerBeacons: no longer reports beacons as off during a Mythic+ run, where the game hides aura data.
+- Fixes: buttons past the window edge and on top of each other in Where to go, the wishlist, Targets and Rewound's Boss bests; Where to go scrolled backwards and then not at all; the roll lists scrolled into empty space.
+
 ## 1.4.0
 
 - SmilerKeys: **Targets** (`/sk targets`, or the button beside Where to go). One row per slot that still has an upgrade in it, with three picks: the **target** you can realistically get now, the **BiS** you are working towards, and **alternatives** worth taking on the way. Items you cannot reach yet (Mythic bosses past your farm count) are marked "not yet".

@@ -2,7 +2,7 @@
 ## Title: |cff00e676LustReady|r
 ## Notes: Says "Lust available" with a sound when you pull a raid or dungeon boss and aren't Exhausted, and again when Exhaustion wears off. /lust
 ## Author: Tom Miller
-## Version: 0.2.1
+## Version: 0.3.0
 ## SavedVariables: LustReadyDB
 ## IconTexture: Interface\Icons\Spell_Nature_Bloodlust
 ## OptionalDeps: Smiler

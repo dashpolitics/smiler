@@ -226,7 +226,22 @@ function X.Refresh()
   for _, c in pairs(cells) do c:Hide() end
   for _, l in pairs(rowLbl) do l:Hide() end
   for _, l in pairs(colLbl) do l:Hide() end
-  for _, b in ipairs(win.diffs) do b.sel = b.d == curDiff; b:SetBackdropBorderColor(unpack(b.sel and C.border or C.edge)); b.text:SetTextColor(unpack(b.sel and C.crystal or C.dim)) end
+  -- how many bosses each difficulty holds, so the tabs say what is behind them. Clicking between
+  -- empty difficulties looked like nothing was happening at all.
+  local counts, total = {}, 0
+  for _, B in pairs(db.best or {}) do
+    for _, d in ipairs(DIFF) do
+      local row = B[d[1]]
+      if row and next(row) then counts[d[1]] = (counts[d[1]] or 0) + 1; total = total + 1 end
+    end
+  end
+  for _, b in ipairs(win.diffs) do
+    b.sel = b.d == curDiff
+    local n = counts[b.d] or 0
+    b.text:SetText(b.label .. (n > 0 and ("  " .. n) or ""))
+    b:SetBackdropBorderColor(unpack(b.sel and C.border or C.edge))
+    b.text:SetTextColor(unpack(b.sel and C.crystal or (n > 0 and C.text or C.faint)))
+  end
   local bosses, cs, me = bossOrder(), chars(), charKey()
   local body = win.body
   for j, k in ipairs(cs) do
@@ -287,6 +302,15 @@ function X.Refresh()
       end
     end
   end
+  if shown == 0 then
+    if total == 0 then
+      win.empty:SetText("Nothing recorded yet.\n\nKill a raid boss on a healer spec and your healing is read from the game's damage meter after the kill. Dungeon bosses are not recorded here.")
+    else
+      local have = {}
+      for _, d in ipairs(DIFF) do if (counts[d[1]] or 0) > 0 then have[#have + 1] = d[2] end end
+      win.empty:SetText("Nothing on this difficulty yet.\n\nYou have records on: " .. table.concat(have, ", ") .. ".")
+    end
+  end
   win.empty:SetShown(shown == 0)
   win:SetSize(math.max(420, NAME_W + #cs * CELL_W + 36), math.max(180, 110 + shown * ROW_H))
 end
@@ -303,17 +327,23 @@ local function build()
   win.diffs = {}
   local prev
   for _, d in ipairs(DIFF) do
-    local b = button(win, d[2], 64, function() curDiff = d[1]; X.Refresh() end)
-    b.d = d[1]
+    local b = button(win, d[2], 78, function() curDiff = d[1]; X.Refresh() end)
+    b.d, b.label = d[1], d[2]
     if prev then b:SetPoint("LEFT", prev, "RIGHT", 4, 0) else b:SetPoint("TOPLEFT", 14, -36) end
     win.diffs[#win.diffs + 1] = b; prev = b
   end
   win.body = CreateFrame("Frame", nil, win)
   win.body:SetPoint("TOPLEFT", 14, -66); win.body:SetPoint("BOTTOMRIGHT", -14, 30)
-  win.empty = fs(win.body, 12, C.dim); win.empty:SetPoint("TOPLEFT", 0, -24)
+  -- both lines are pinned on the left and the right so they wrap inside the window, which is
+  -- sized to the table and can be narrower than the sentence
+  win.empty = fs(win.body, 12, C.dim)
+  win.empty:SetPoint("TOPLEFT", 0, -24); win.empty:SetPoint("RIGHT", win.body, "RIGHT", 0, 0)
+  win.empty:SetJustifyH("LEFT"); win.empty:SetWordWrap(true)
   win.empty:SetText("No kills recorded on this difficulty yet.\nKill a raid boss as a healer and your HPS is saved here.")
-  local note = fs(win, 11, C.dim); note:SetPoint("BOTTOMLEFT", 14, 10)
-  note:SetText("HPS = healing done / kill length. Healer specs only. * marks the best character on each boss.")
+  local note = fs(win, 11, C.dim)
+  note:SetPoint("BOTTOMLEFT", 14, 10); note:SetPoint("RIGHT", win, "RIGHT", -14, 0)
+  note:SetJustifyH("LEFT"); note:SetWordWrap(true)
+  note:SetText("HPS = healing done / kill length. Healer specs only. * marks your best character on each boss.")
   win:SetScript("OnShow", X.Refresh)
   win:Hide()
 end

@@ -60,15 +60,14 @@ end
 local KIND_ICON = { ready = { "tick", "emerald" }, record = { "star", "diamond" }, upgrade = { "arrow", "topaz" },
                     death = { "warn", "ruby" }, info = { "info", "sapphire" }, muted = { "dot", "muted" } }
 
-function S:ToggleMenu(owner)
-  if not menu then build() end
-  if menu:IsShown() then menu:Hide(); return end
-  if menu.closedAt and GetTime() - menu.closedAt < 0.3 then return end   -- the click that just closed it
+-- The menu grows with the pack: thirteen add-ons plus status lines is taller than some screens, so
+-- it lays out into a capped height and scrolls with the wheel rather than running off the top.
+local function layoutMenu()
   for _, r in ipairs(menu.rows) do r:Hide() end
   for _, l in ipairs(menu.lines) do l:Hide() end
   for _, t in ipairs(menu.rules) do t:Hide() end
 
-  local y, n = -36, 0
+  local y, n = -36 + (menu.offset or 0), 0
   for _, m in ipairs(S.MODULES) do
     local _, loaded = S.ModuleState(m)
     if loaded and m.open and m.menu then
@@ -106,8 +105,32 @@ function S:ToggleMenu(owner)
   r:Show()
   y = y - ROW_H - 6
 
-  menu:SetHeight(-y)
+  local content = -y + (menu.offset or 0)
+  local maxH = math.max(220, (UIParent:GetHeight() or 800) * 0.75)
+  menu.contentH = content
+  menu.maxOffset = math.max(0, content - maxH)
+  menu:SetHeight(math.min(content, maxH))
+  if menu.hint then menu.hint:SetShown((menu.maxOffset or 0) > 0) end
+  return content
+end
+
+function S:ToggleMenu(owner)
+  if not menu then build() end
+  if menu:IsShown() then menu:Hide(); return end
+  if menu.closedAt and GetTime() - menu.closedAt < 0.3 then return end   -- the click that just closed it
+  menu.offset = 0
+  menu:SetClampedToScreen(true)
+  menu:EnableMouseWheel(true)
+  menu:SetScript("OnMouseWheel", function(self, d)
+    if (self.maxOffset or 0) <= 0 then return end
+    -- a positive offset lifts the rows, revealing what is further down the list, so the wheel
+    -- subtracts: wheel down (d = -1) moves down the menu, which is what every other list does
+    self.offset = math.max(0, math.min(self.maxOffset, (self.offset or 0) - d * ROW_H * 2))
+    layoutMenu()
+  end)
+  layoutMenu()
   menu:ClearAllPoints()
+
   if owner and owner.GetCenter then
     menu:SetPoint("TOPRIGHT", owner, "BOTTOMLEFT", 0, -4)
   else

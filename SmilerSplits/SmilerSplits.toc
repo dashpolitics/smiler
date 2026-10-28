@@ -2,7 +2,7 @@
 ## Title: |cffb98cffSmilerSplits|r
 ## Notes: Mythic+ splits: records each boss kill against the timer and shows whether you're on pace, compared with your run nearest this key level. /splits
 ## Author: Tom Miller
-## Version: 0.2.0
+## Version: 0.3.0
 ## SavedVariables: SmilerSplitsDB
 ## IconTexture: Interface\Icons\INV_Misc_PocketWatch_01
 ## OptionalDeps: Smiler

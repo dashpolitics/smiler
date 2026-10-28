@@ -9,6 +9,7 @@ local isSecret = issecretvalue or function() return false end
 local LIGHT, FAITH = 53563, 156910
 local DEFAULTS = { size = 34, locked = false, alert = true, sound = true, onlyGroup = true, hideWhenFine = false }
 local db, frame, icons = nil, nil, {}
+ns.icons = icons   -- exposed for tests
 local WHITE = "Interface\\Buttons\\WHITE8x8"
 local function say(...) print("|cffb98cffSmilerBeacons|r", ...) end
 local function RGB(name, a)
@@ -34,6 +35,20 @@ local function units()
   elseif IsInGroup() then for i = 1, GetNumSubgroupMembers() do out[#out + 1] = "party" .. i end end
   return out
 end
+
+-- When the game hides aura data from add-ons. In Midnight this is not only "in combat": a Mythic+
+-- run and a boss encounter are restricted end to end, so between pulls in a key the aura lookup
+-- still answers nothing - which is why the beacons read as missing while they were plainly up.
+local function restricted()
+  if IsEncounterInProgress and IsEncounterInProgress() then return true end
+  if C_ChallengeMode and C_ChallengeMode.IsChallengeModeActive then
+    local ok, on = pcall(C_ChallengeMode.IsChallengeModeActive)
+    if ok and on then return true end
+  end
+  if InCombatLockdown() then return true end
+  return false
+end
+ns.Restricted = restricted
 
 -- who has my beacon: name, or nil; "?" when the game hides auras from add-ons right now
 local function whoHas(id)
@@ -102,7 +117,8 @@ function ns.Update()
   for i, b in ipairs(icons) do
     local who = whoHas(b.id)
     local remembered = false
-    if who == nil and InCombatLockdown() and IsInInstance() then who = "?" end   -- in instanced combat a blank answer may just be hidden
+    -- a blank answer while the game is restricting auras means "cannot tell", not "nobody has it"
+    if who == nil and restricted() then who = "?" end
     if who == "?" then
       -- auras hidden right now: trust your last cast, as long as that person is still in the group
       local lc = lastCast[b.id]
@@ -158,7 +174,7 @@ if S and S.RegisterSettings then
     local B = W.Column(body, 334, 0, 290)
     B:Section("When it's on")
     B:Note("Holy Paladin with the Beacon of Faith talent, in a party or raid. On any other spec or talent build it does nothing.", "soft", 13)
-    B:Note("In combat the game may hide other players' auras from add-ons; the icons then show ? rather than a false warning.", "muted", 12)
+    B:Note("During a Mythic+ run or a boss encounter the game hides other players' auras from add-ons. The icons then fall back to who you last beaconed (shown with a ~), or ? if that is unknown, rather than warning you falsely.", "muted", 12)
     return { note = "/beacons lock · /beacons test", footer = {} }
   end)
   if S.RegisterStatus then

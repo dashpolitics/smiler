@@ -49,6 +49,9 @@ L.SEASON = {
   raidBonusLast = { count = 2, text = "Myth 9/6 · 344", ilvl = 344 },   -- Mythic, last two bosses
   -- bonus rolls on the last two bosses (Coiled Altar, Ula'tek) pay out higher, by difficulty
   raidBonusLastBy = { [15] = { ilvl = 334, text = "Myth 6/6 · 334" }, [16] = { ilvl = 344, text = "Myth 9/6 · 344" } },
+  -- …and they DROP higher there too, but only on Mythic. A Heroic kill of the last two bosses is an
+  -- ordinary Heroic drop; it is the Heroic bonus roll that is lifted to Myth 6/6, above.
+  raidDropLastBy = { [16] = { ilvl = 344, text = "Myth 9/6 · 344" } },
   -- tier tokens: which boss drops which slot, and the token names (Venomcast Idol = mail hands, …)
   tier = {
     raid  = "the venomous abyss",
@@ -264,6 +267,10 @@ function L.Scan()
     it.bonus = bonusByInst[it.instID]
     it.lair = lairByInst[it.instID]
     it.slot = (L.slotByFilter[it.filter] or L.slotByKey.other).key
+    -- Transmog has the same equip slot as real gear, so the journal's filter calls a cosmetic helm
+    -- "head" and it turns up as an upgrade. Appearance items go to "other", which every planning
+    -- path already skips; they stay browsable, tagged MOG.
+    if L.IsCosmetic(it) then it.cosmetic = true; it.slot = "other" end
     if it.name and tokenNames[it.name] then it.hidden = true end   -- tokens: shown as your tier piece instead
   end
 
@@ -286,6 +293,22 @@ L.EQUIPLOC = {
   INVTYPE_WEAPONMAINHAND = "main", INVTYPE_RANGED = "main", INVTYPE_RANGEDRIGHT = "main",
   INVTYPE_WEAPONOFFHAND = "off", INVTYPE_SHIELD = "off", INVTYPE_HOLDABLE = "off",
 }
+-- Cosmetic (transmog-only) gear: an appearance, not an item level. Asked of the game by link where
+-- there is one, falling back to the armour class's Cosmetic subclass (4/5).
+function L.IsCosmetic(it)
+  if not (it and C_Item) then return false end
+  local link = it.link and (it.link[16] or it.link[15] or it.link[14] or it.link[17] or it.link.c)
+  if C_Item.IsCosmeticItem then
+    local ok, cos = pcall(C_Item.IsCosmeticItem, link or it.id)
+    if ok and cos then return true end
+  end
+  if C_Item.GetItemInfoInstant then
+    local ok, _, _, _, _, _, classID, subClassID = pcall(C_Item.GetItemInfoInstant, it.id)
+    if ok and classID == 4 and subClassID == 5 then return true end
+  end
+  return false
+end
+
 local ARMOR_FOR_CLASS = { WARRIOR = 4, PALADIN = 4, DEATHKNIGHT = 4, HUNTER = 3, SHAMAN = 3, EVOKER = 3,
   ROGUE = 2, DRUID = 2, MONK = 2, DEMONHUNTER = 2, PRIEST = 1, MAGE = 1, WARLOCK = 1 }
 local PRIMARY_KEY = { [1] = "ITEM_MOD_STRENGTH_SHORT", [2] = "ITEM_MOD_AGILITY_SHORT", [4] = "ITEM_MOD_INTELLECT_SHORT" }
@@ -804,6 +827,16 @@ function L.RollIlvl(it, diff)
   if by and lastBoss(it) then return by.ilvl end
   return L.SEASON.raidRoll[diff]
 end
+-- what a KILL gives you, which is not always what the Adventure Guide lists: the last two bosses
+-- drop higher on Mythic. Without this a Mythic kill looked like 324 against a Heroic bonus roll's
+-- 334, so the plan quietly decided Heroic was the better way to get a Mythic-only item.
+function L.DropIlvl(it, diff)
+  local base = it.ilvl and it.ilvl[diff]
+  if not it.raid or it.lair then return base end
+  local by = L.SEASON.raidDropLastBy and L.SEASON.raidDropLastBy[diff]
+  if by and lastBoss(it) then return math.max(by.ilvl, base or 0) end
+  return base
+end
 
 -- mode: "drop" (from the boss / end of the key), "bonus" (bonus roll) or "vault" (Great Vault)
 function L.Ilvl(it, raidDiff, key, mode)
@@ -813,7 +846,7 @@ function L.Ilvl(it, raidDiff, key, mode)
   if it.delveLoot then return L.SEASON.delveLoot.ilvl end
   if it.crafted then return L.SEASON.crafted and L.SEASON.crafted.max end
   if it.raid then
-    if mode == "drop" then return it.ilvl[raidDiff] end
+    if mode == "drop" then return L.DropIlvl(it, raidDiff) end
     return L.RollIlvl(it, raidDiff)
   end
   local eor, weekly = L.MPlusLevels(key)
@@ -956,7 +989,7 @@ function L.Routes(it)
     local boss = (it.encName and it.encName ~= "" and (it.encName .. " · ") or "") .. (it.inst or "")
     for _, d in ipairs(L.RAID_DIFFS) do
       local diff, dname = d[1], d[2]
-      local lv = it.ilvl and it.ilvl[diff]
+      local lv = L.DropIlvl(it, diff)
       if lv then
         add({ kind = "raid", label = dname .. " raid", where = boss, ilvl = lv, hint = L.RAID_TRACK[diff], mode = "drop", diff = diff })
       end
@@ -1201,67 +1234,145 @@ function L.PickKindOf(id)
   end
 end
 
--- the item record for an id (scan cache first)
-function L.ItemByID(id)
-  if not id then return nil end
-  for _, it in ipairs(L.items or {}) do if it.id == id then return it end end
-end
-
--- Can you get this now? Raid items only count at a difficulty you are actually killing: Mythic
--- bosses past your farm count are "not yet", everything else (Heroic and below, M+, delves,
--- crafting) is reachable this week.
-function L.Achievable(it)
-  if not it then return false end
-  if not it.raid then return true end
-  local farm = (L.PlanOpts and L.PlanOpts().farm) or L.MythicBossCount()
-  for _, r in ipairs(L.Routes(it)) do
-    local d = r.diff
-    if not d then return true end
-    -- only count a difficulty the item actually drops at
-    if it.ilvl and it.ilvl[d] then
-      if d < 16 then return true end
-      if not it.encIndex or it.encIndex <= (farm or 0) then return true end
-    end
-  end
-  return false
-end
-
--- Everything that would be an upgrade in one slot, best first (QE score, then the item level it reaches)
-function L.SlotCandidates(slotKey)
-  local q = L.QEScores and L.QEScores()
-  q = (q and q.scores) or {}
-  local out = {}
-  for _, it in ipairs(L.items or {}) do
-    if it.slot == slotKey and not it.hidden and not it.reagent and (it.id or 0) > 0 then
-      local max = L.MaxIlvl(it)
-      local gain = L.Gain(it, max)
-      if max and gain and gain > 0 then
-        out[#out + 1] = { it = it, id = it.id, max = max, gain = gain, qe = q[it.id],
-                          now = L.Achievable(it), kind = L.PickKindOf(it.id) }
+-- an item's record: the current scan first, then your wishlist (which keeps everything an entry
+-- needs), so an item from a source this character's scan no longer lists still works.
+function L.ItemFromWish(id)
+  for slot, list in pairs(L.Wish()) do
+    for _, e in ipairs(list) do
+      if e.id == id then
+        return { id = e.id, name = e.name, slot = slot, icon = e.icon, raid = e.raid, inst = e.inst,
+                 instID = e.instID, enc = e.enc, encName = e.encName, encIndex = e.encIndex, nEnc = e.nEnc,
+                 bonus = e.bonus, crafted = e.crafted, reagent = e.reagent, emb = e.emb, tier = e.tier,
+                 token = e.token, labyrinth = e.labyrinth, delve = e.delve, delveLoot = e.delveLoot,
+                 only = e.only, outdoor = e.outdoor, ilvl = e.ilvls or {}, link = e.links or {} }
       end
     end
   end
+end
+
+function L.ItemByID(id)
+  if not id then return nil end
+  for _, it in ipairs(L.items or {}) do if it.id == id then return it end end
+  return L.ItemFromWish(id)
+end
+
+-- what you already own (equipped + bags), best item level per item ID. Cached for a few seconds:
+-- the targets board and the planner both ask for it many times per draw.
+local ownCache, ownAt = nil, 0
+function L.OwnedLevels(force)
+  local now = GetTime and GetTime() or 0
+  if ownCache and not force and (now - ownAt) < 5 then return ownCache end
+  local out = {}
+  local function note(link)
+    if not link then return end
+    local id = C_Item.GetItemInfoInstant and C_Item.GetItemInfoInstant(link)
+    local lv = C_Item.GetDetailedItemLevelInfo and C_Item.GetDetailedItemLevelInfo(link) or 0
+    if id and (not out[id] or lv > out[id]) then out[id] = lv end
+  end
+  for inv = 1, 17 do note(GetInventoryItemLink("player", inv)) end
+  if C_Container and C_Container.GetContainerNumSlots then
+    for bag = 0, 4 do
+      for slot = 1, C_Container.GetContainerNumSlots(bag) or 0 do
+        local info = C_Container.GetContainerItemInfo(bag, slot)
+        note(info and info.hyperlink)
+      end
+    end
+  end
+  ownCache, ownAt = out, now
+  return out
+end
+function L.OwnedLevel(id) return id and L.OwnedLevels()[id] end
+
+-- Mythic bosses you have on farm (the planner's setting; everything, if it is not set)
+function L.FarmCount()
+  local o = L.PlanOpts and L.PlanOpts()
+  return (o and o.farm) or L.MythicBossCount()
+end
+
+-- Is this route open to you this week? A Mythic raid route counts only on a boss within your farm
+-- count, and a raid difficulty counts only where the item actually drops.
+function L.RouteOpen(it, r, farm)
+  if not it.raid or it.lair then return true end
+  local d = r.diff
+  if not d then return true end
+  if it.ilvl and not it.ilvl[d] then return false end
+  if d < 16 then return true end
+  farm = farm or L.FarmCount()
+  return (it.encIndex or 0) <= (farm or 0)
+end
+
+-- The two numbers that matter for a target: the best item level you can reach NOW, and the ceiling
+-- if nothing were in the way. They differ when the item's good version is behind Mythic progress.
+function L.Reach(it)
+  if not it then return nil, nil end
+  local farm = L.FarmCount()
+  local now, ever, nowR, everR
+  for _, r in ipairs(L.Routes(it)) do
+    local lv = r.max or r.ilvl
+    if lv then
+      if not ever or lv > ever then ever, everR = lv, r end
+      if L.RouteOpen(it, r, farm) and (not now or lv > now) then now, nowR = lv, r end
+    end
+  end
+  return now, ever, nowR, everR
+end
+
+-- "Can you get this at its best right now?" - what the board marks as "not yet".
+function L.Achievable(it)
+  if not it then return false end
+  local now, ever = L.Reach(it)
+  if not ever then return true end
+  if not now then return false end
+  return now >= ever
+end
+
+-- Everything you could put in one slot: the scanned loot tables plus anything already on your
+-- wishlist (which may come from a source the current scan doesn't cover). Nothing is filtered out
+-- for being too weak - that is your call - but each one carries what it reaches, what it gains over
+-- what you wear, its QE score and whether you can get it now.
+function L.SlotCandidates(slotKey)
+  local q = L.QEScores and L.QEScores()
+  q = (q and q.scores) or {}
+  local out, seen = {}, {}
+  local function push(it)
+    if not it or seen[it.id] or (it.id or 0) <= 0 or it.reagent then return end
+    seen[it.id] = true
+    local nowLv, max = L.Reach(it)
+    local gain = max and L.Gain(it, max)
+    local owned = L.OwnedLevel(it.id)
+    out[#out + 1] = { it = it, id = it.id, max = max, nowLv = nowLv, gain = gain, up = (gain or 0) > 0,
+                      qe = q[it.id], now = (nowLv and max and nowLv >= max) or false, owned = owned,
+                      have = owned and max and owned >= max or false,
+                      kind = L.PickKindOf(it.id), wished = L.IsWished(it.id) }
+  end
+  for _, it in ipairs(L.items or {}) do
+    if it.slot == slotKey and not it.hidden then push(it) end
+  end
+  -- wishlist entries for this slot, even if this character's scan no longer lists them
+  for _, e in ipairs(L.Wish()[slotKey] or {}) do
+    if not seen[e.id] then push(L.ItemByID(e.id)) end
+  end
   table.sort(out, function(a, b)
+    if a.up ~= b.up then return a.up end                       -- upgrades first
     if (a.qe or -1) ~= (b.qe or -1) then return (a.qe or -1) > (b.qe or -1) end
-    if a.max ~= b.max then return a.max > b.max end
+    if (a.max or 0) ~= (b.max or 0) then return (a.max or 0) > (b.max or 0) end
     return (a.it.name or "") < (b.it.name or "")
   end)
   return out
 end
 
--- Slots with at least one upgrade available, in paperdoll order
-function L.SlotsWithUpgrades()
+-- One row per gear slot, always - a slot with nothing in it yet is where a target is most useful.
+function L.TargetRows()
   local out = {}
   for _, s in ipairs(L.SLOTS) do
     if s.key ~= "emb" and s.key ~= "other" then
-      local c = L.SlotCandidates(s.key)
-      if #c > 0 or L.SlotPicks(s.key).target or L.SlotPicks(s.key).bis or #L.SlotPicks(s.key).alts > 0 then
-        out[#out + 1] = { slot = s, cands = c, picks = L.SlotPicks(s.key), done = L.SlotState(s.key) }
-      end
+      out[#out + 1] = { slot = s, cands = L.SlotCandidates(s.key), picks = L.SlotPicks(s.key), done = L.SlotState(s.key) }
     end
   end
   return out
 end
+-- kept for older callers
+function L.SlotsWithUpgrades() return L.TargetRows() end
 
 -- make sure a picked item is on the wishlist (that is what the planner reads)
 local function ensureWished(it)
@@ -1328,8 +1439,10 @@ function L.TargetList()
   local function push(id, kind, slot)
     local it = L.ItemByID(id)
     if not it then return end
-    out[#out + 1] = { id = id, it = it, kind = kind, slot = slot, qe = q[id],
-                      prio = L.Prio(id), auto = L.IsAutoPrio(id), max = L.MaxIlvl(it), now = L.Achievable(it) }
+    local nowLv, max = L.Reach(it)
+    out[#out + 1] = { id = id, it = it, kind = kind, slot = slot, qe = q[id], prio = L.Prio(id),
+                      auto = L.IsAutoPrio(id), max = max, nowLv = nowLv, owned = L.OwnedLevel(id),
+                      now = (nowLv and max and nowLv >= max) or false }
   end
   for _, s in ipairs(L.SLOTS) do
     local p = pickStore()[s.key]
@@ -1590,6 +1703,64 @@ function L.MythicBossCount()
   return n
 end
 
+-- This season's raid bosses, in kill order, with the difficulties each one actually has. Which
+-- difficulties exist is read from the loot itself (an item has an item level per difficulty), not
+-- from a hand-written list, so a boss that is LFR-locked or lair-only is right without being told.
+function L.SeasonBosses()
+  local by, out = {}, {}
+  for _, it in ipairs(L.items or {}) do
+    -- it.bonus marks this season's bonus-rollable raid: without it the Adventure Guide hands back
+    -- every raid it still lists and the grid grows columns for bosses that are not this season's
+    if it.raid and it.bonus and (it.enc or 0) > 0 and (it.encName or "") ~= "" then
+      local b = by[it.enc]
+      if not b then
+        b = { enc = it.enc, name = it.encName, inst = it.inst, instID = it.instID, lair = it.lair,
+              index = it.encIndex or 0, nEnc = it.nEnc or 0, diffs = {}, nItems = {} }
+        by[it.enc] = b
+        out[#out + 1] = b
+      end
+      for d in pairs(it.ilvl or {}) do
+        b.diffs[d] = true
+        b.nItems[d] = (b.nItems[d] or 0) + 1
+      end
+    end
+  end
+  -- the raid first in encounter order, then the lair bosses, so the columns read the way you clear
+  table.sort(out, function(a, b)
+    if (a.lair and 1 or 0) ~= (b.lair and 1 or 0) then return not a.lair end
+    if a.index ~= b.index then return a.index < b.index end
+    return (a.name or "") < (b.name or "")
+  end)
+  return out
+end
+
+-- This season's Mythic+ dungeons. The key grid's own map list is the spine, so all eight show up
+-- whether or not their loot has been scanned yet; loot data fills in how many items each one has.
+function L.SeasonDungeons()
+  local out, byName = {}, {}
+  for _, m in ipairs(ns.maps or {}) do
+    local d = { instID = m.id, name = m.name, short = m.short, n = 0 }
+    out[#out + 1] = d
+    byName[(m.name or ""):lower()] = d
+  end
+  local byID = {}
+  for _, it in ipairs(L.items or {}) do
+    if not it.raid and not it.crafted and not it.delve and not it.labyrinth
+       and (it.inst or "") ~= "" and it.instID and it.slot ~= "other" then
+      local d = byName[(it.inst or ""):lower()]
+      if not d and not byID[it.instID] then
+        d = { instID = it.instID, name = it.inst, short = ns.Abbrev and ns.Abbrev(it.inst) or it.inst, n = 0 }
+        byID[it.instID] = d
+        out[#out + 1] = d
+      end
+      d = d or byID[it.instID]
+      if d then d.n = d.n + 1 end
+    end
+  end
+  table.sort(out, function(a, b) return (a.name or "") < (b.name or "") end)
+  return out
+end
+
 -- bosses killed this week, by "name:difficulty" (lockouts)
 function L.KilledThisWeek()
   local out = {}
@@ -1612,20 +1783,45 @@ function L.BonusRolls()
   return ok and info and info.quantity or nil
 end
 
+-- a lair boss counts as on Mythic farm unless you have said otherwise, so nothing changes for
+-- anyone who never touches the switches
+function L.LairOnFarm(name, opts)
+  local lf = opts and opts.lairFarm
+  if not (lf and name and name ~= "") then return true end
+  return lf[name:lower()] ~= false
+end
+function L.SetLairOnFarm(name, on, opts)
+  if not (opts and name and name ~= "") then return end
+  opts.lairFarm = opts.lairFarm or {}
+  -- not `on and nil or false`: in Lua that collapses to false whichever way round it is
+  if on then opts.lairFarm[name:lower()] = nil else opts.lairFarm[name:lower()] = false end
+end
+
 local function routeAllowed(it, r, opts)
   local m = opts.modes or {}
   local kind
-  if r.kind == "crafted" or r.kind == "delve" then kind = "other"
+  -- delves have their own switch now: "Craft" meant crafting orders and delve armaments at once,
+  -- which made the Craft button do two unrelated things
+  if r.kind == "delve" then kind = "delve"
+  elseif r.kind == "crafted" then kind = "other"
   elseif r.mode == "bonus" then kind = "bonus"
   elseif r.mode == "vault" then kind = "vault"
   else kind = "drop" end
   if not m[kind] then return false end
-  if it.raid and not it.lair and r.diff == 16 and opts.farm and (it.encIndex or 0) > opts.farm then return false end
+  if it.raid and r.diff == 16 then
+    if it.lair then
+      -- a lair boss has its own switch rather than a place in the raid's kill order
+      if L.LairOnFarm and not L.LairOnFarm(it.encName, opts) then return false end
+    elseif opts.farm and (it.encIndex or 0) > opts.farm then
+      return false
+    end
+  end
   return true, kind
 end
 
 function L.PlanFor(opts)
   opts = opts or {}
+  L.planParked = {}            -- items held back on purpose, for the window to explain
   local groups, list = {}, {}
   local killed = L.KilledThisWeek()
   local qe = L.QEScores and L.QEScores()
@@ -1649,25 +1845,50 @@ function L.PlanFor(opts)
   else
     for slot, entries in pairs(L.Wish()) do
       for _, e in ipairs(entries) do
-        if opts.scope ~= "bis" or L.IsBiS(e.id) then
+        -- "Targets" scope is your picks board: the target you can get now, the BiS you are working
+        -- towards and the alternatives, plus anything starred BiS. It used to be the BiS stars
+        -- alone, so a slot's target - the achievable one - never reached the plan at all.
+        if opts.scope ~= "bis" or L.IsBiS(e.id) or L.PickKindOf(e.id) then
           local it = L.byKey and L.byKey[e.id .. ":" .. (e.enc or 0)]
           if not it then for _, x in ipairs(L.items or {}) do if x.id == e.id then it = x; break end end end
           consider(it, e)
         end
       end
     end
-    if opts.scope == "bis" then   -- BiS items not on the wishlist yet
-      for _, it in ipairs(L.items or {}) do if L.IsBiS(it.id) then consider(it) end end
+    if opts.scope == "bis" then   -- picks and BiS items not on the wishlist yet
+      for _, it in ipairs(L.items or {}) do if L.IsBiS(it.id) or L.PickKindOf(it.id) then consider(it) end end
     end
   end
   -- best allowed way per item, grouped by where you go
+  local owned = L.OwnedLevels()
   for _, c in ipairs(cands) do
     local it = c.it
     local best, bestKind
+    local have = owned[it.id]
+    -- Your picks board draws a line the plan used to ignore: a TARGET is the one you can realistically
+    -- get now, a BIS is the one you are working towards. So a BiS pick is only worth planning at its
+    -- best level - routing you to a Heroic copy of your Mythic BiS is settling, which is what the
+    -- target is for. Anything else takes the best way that is open.
+    local pickKind = L.PickKindOf(it.id)
+    local topLv = 0
+    if pickKind == "bis" then
+      for _, r in ipairs(L.Routes(it)) do topLv = math.max(topLv, r.max or r.ilvl or 0) end
+    end
+    local shortOf
     for _, r in ipairs(L.Routes(it)) do
       local ok, kind = routeAllowed(it, r, opts)
+      -- nothing to gain from a way that cannot beat the copy you already have
+      if ok and have and (r.max or r.ilvl or 0) <= have then ok = false end
+      if ok and topLv > 0 and (r.max or r.ilvl or 0) < topLv then
+        ok = false
+        shortOf = topLv                       -- allowed, but it is not the version you are after
+      end
       if ok and (not best or (r.max or r.ilvl or 0) > (best.max or best.ilvl or 0)
          or ((r.max or 0) == (best.max or 0) and (r.ilvl or 0) > (best.ilvl or 0))) then best, bestKind = r, kind end
+    end
+    if not best and shortOf then
+      -- held back on purpose: say so rather than letting it vanish
+      L.planParked[#L.planParked + 1] = { it = it, why = ("your BiS here is the %d version; nothing open to you reaches it"):format(shortOf) }
     end
     if best then
       local key = it.raid and ("r" .. (it.enc or 0)) or ("d" .. tostring(it.instID or 0))
