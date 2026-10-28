@@ -2,7 +2,7 @@
 ## Title: |cffb98cffSmilerKeys|r
 ## Notes: Your friends' best timed M+ keys, current keystones and Resilient levels in one grid, plus loot tables and a wishlist. /sk
 ## Author: Tom Miller
-## Version: 0.38.0
+## Version: 0.39.0
 ## X-License: MIT
 ## Category: Dungeons & Raids
 ## SavedVariables: SmilerKeysDB

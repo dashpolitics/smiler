@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.6.1
+
+- SmilerKeys: an item can be a slot's **target and its BiS at once**. The same neck is a 334 from a Heroic bonus roll and a 344 on Mythic, so it is both the one you can get now and the one you are working towards; setting one used to clear the other. Only "alternative" stays exclusive with the two.
+- SmilerKeys: because of that, a boss could drop out of Where to go altogether - the item was BiS only, the plan holds a BiS pick out for its best version, and so Heroic Ula'tek was never offered. An item that is also the slot's target is now planned at whatever you can reach.
+- SmilerKeys: the order list shows a dual-role item once per role, tagged with the level that role means (`Tgt 334`, `BiS 344`). Both rows share one priority.
+
 ## 1.6.0
 
 **Where to go, rebuilt.** The week map at the top is now a grid: four rows, one per raid difficulty, against this season's ten bosses, with the eight Mythic+ dungeons on their own strip below and a Delves switch beside them. Each row is named and each cell carries a shape as well as a colour (`*` rolled, `x` killed, blank open, `-` no loot on that difficulty), so it reads the same without colour. The number in a cell is how many items you want from that boss **at that difficulty**; hover for the list, with what a kill and a bonus roll each give. Left-click a cell to cycle open > rolled > killed, right-click to clear, or click a difficulty's name to set or clear the whole row.

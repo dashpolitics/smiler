@@ -1224,14 +1224,24 @@ function L.SlotPicks(slotKey)
   return p
 end
 
--- what an item is picked as, and in which slot
-function L.PickKindOf(id)
+-- every role an item holds, since one item can be both a slot's target and its BiS
+function L.PickRoles(id)
   if not id then return nil end
   for slot, p in pairs(pickStore()) do
-    if p.target == id then return "target", slot end
-    if p.bis == id then return "bis", slot end
-    for _, a in ipairs(p.alts or {}) do if a == id then return "alt", slot end end
+    local r
+    if p.target == id then r = r or {}; r.target = true end
+    if p.bis == id then r = r or {}; r.bis = true end
+    for _, a in ipairs(p.alts or {}) do if a == id then r = r or {}; r.alt = true end end
+    if r then r.slot = slot; return r end
   end
+end
+
+-- what an item is picked as, and in which slot. Target wins when it is both, because the target is
+-- the one you can actually go and get.
+function L.PickKindOf(id)
+  local r = L.PickRoles(id)
+  if not r then return nil end
+  return (r.target and "target") or (r.bis and "bis") or "alt", r.slot
 end
 
 -- an item's record: the current scan first, then your wishlist (which keeps everything an entry
@@ -1393,12 +1403,13 @@ function L.SetTarget(slotKey, kind, item)
   slotKey = slotKey or it.slot
   if it.slot ~= slotKey then return false end
   local p = L.SlotPicks(slotKey)
-  -- an item can only hold one role in its slot
-  local was = L.PickKindOf(it.id)
-  if was == "alt" then
-    for i = #p.alts, 1, -1 do if p.alts[i] == it.id then table.remove(p.alts, i) end end
-  elseif was == "target" then p.target = nil
-  elseif was == "bis" then p.bis = nil; if L.IsBiS(it.id) then L.ToggleBiS(it.id) end
+  -- One item can be both the target and the BiS of its slot. That is not a mistake: the same neck
+  -- is a 334 from a Heroic bonus roll and a 344 on Mythic, so it is both the one you can get now
+  -- and the one you are working towards. Only "alternative" is exclusive with the other two.
+  for i = #p.alts, 1, -1 do if p.alts[i] == it.id then table.remove(p.alts, i) end end
+  if kind == "alt" then
+    if p.target == it.id then p.target = nil end
+    if p.bis == it.id then p.bis = nil; if L.IsBiS(it.id) then L.ToggleBiS(it.id) end end
   end
   if kind == "target" then
     local old = p.target; p.target = it.id
@@ -1869,9 +1880,11 @@ function L.PlanFor(opts)
     -- get now, a BIS is the one you are working towards. So a BiS pick is only worth planning at its
     -- best level - routing you to a Heroic copy of your Mythic BiS is settling, which is what the
     -- target is for. Anything else takes the best way that is open.
-    local pickKind = L.PickKindOf(it.id)
+    -- Only when it is BiS and nothing else. The same item set as this slot's target as well means
+    -- you have said you would take the version you can reach, so the plan sends you for it.
+    local roles = L.PickRoles(it.id)
     local topLv = 0
-    if pickKind == "bis" then
+    if roles and roles.bis and not roles.target and not roles.alt then
       for _, r in ipairs(L.Routes(it)) do topLv = math.max(topLv, r.max or r.ilvl or 0) end
     end
     local shortOf

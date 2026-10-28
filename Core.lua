@@ -3,7 +3,7 @@
 local ADDON, S = ...
 Smiler = S
 
-S.VERSION = "1.6.0"
+S.VERSION = "1.6.1"
 
 ---------------------------------------------------------------- Crystal Ball palette
 -- One meaning per gem colour, and each one always comes with a shape or a word.

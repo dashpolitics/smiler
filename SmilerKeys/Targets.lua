@@ -337,6 +337,11 @@ function ns.Targets_Refresh()
     local kindC = e.kind == "bis" and "topaz" or e.kind == "target" and "emerald" or "muted"
     r.name:SetText("|cff" .. T.Hex(kindC) .. "·|r " .. shortName(e.it.name, 24))
     local bits = {}
+    -- the same item can be here twice, as the slot's target and as its BiS, so each row says which
+    -- role it is and at what level - otherwise two identical names sit on top of each other
+    local lvl = e.kind == "bis" and e.max or e.nowLv
+    bits[#bits + 1] = "|cff" .. T.Hex(kindC) .. (e.kind == "bis" and "BiS" or e.kind == "target" and "Tgt" or "Alt")
+      .. (lvl and (" " .. lvl) or "") .. "|r"
     if e.qe then bits[#bits + 1] = qeText(e.qe) end
     if e.owned and e.max and e.owned >= e.max then bits[#bits + 1] = "|cff00e676✓|r"
     elseif not e.now then bits[#bits + 1] = "|cffffab00M|r" end
